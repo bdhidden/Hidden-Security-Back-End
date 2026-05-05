@@ -4,7 +4,7 @@ const PaymentsSchema = new mongoose.Schema({
     orderId: { type: String, required: true },
     client_id: { type: String, required: true },
     email: { type: String, required: true },
-    plan: { type: String, enum: ['Landing Basic', 'Landing Pro', 'E-shop Basic', 'E-shop Pro'], /* required: true  */},
+    plan: { type: String, enum: ['Starter', 'Pro', 'Elite', 'Voucher']},
     amount: { type: Number, required: true },
     mp_payment_id: { type: String }, // El ID que te devuelve Mercado Pago
     status: { 

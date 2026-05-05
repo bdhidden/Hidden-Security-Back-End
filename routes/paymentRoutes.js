@@ -3,9 +3,6 @@ const express = require("express")
 const paymentsRouter = express.Router()
 // Mongo
 const PaymentsMongo = require("../models/Payments")
-const Product = require("../models/productModel")
-const Cart = require("../models/CartSchema")
-const Coupon = require("../models/CouponSchema")
 
 const adminMiddleware = require("../middleware/adminMiddleware")
 

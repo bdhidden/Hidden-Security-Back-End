@@ -66,7 +66,7 @@ const esProduccion = (process.env.NODE_ENV === 'production');
     }
 }); */
 
-// RUTA COBRA PARA ECOMMERCE PLANTILLAS DEEPDEV
+// RUTA COBRA PARA ECOMMERCE PLANTILLAS 
 mercadoPagoRouter.post("/mercado-pago-payments", async (req, res) => {
     const { token, issuer_id, payment_method_id, transaction_amount, installments, payer, idempotencyKey, plan, items, couponCode } = req.body;
     
@@ -77,14 +77,14 @@ mercadoPagoRouter.post("/mercado-pago-payments", async (req, res) => {
     const sanitizedEmail = payer.email.toLowerCase();
 
     try {
-        for (const item of items) {
+        /* for (const item of items) {
             if (typeof item.cantidad !== 'number' || isNaN(item.cantidad) || item.cantidad <= 0) {
                 return res.status(409).json({ message: `Cantidad no válida para el producto: ${item.nombre} 🔴` });
             }
             if (item.cantidad > item.stockMax) {
                 return res.status(409).json({ message: `No es posible procesar ${item.nombre}, excede el stock disponible! 🔴` });
             }
-        }
+        } */
 
         let couponData = null;
             if (couponCode) {
@@ -108,7 +108,7 @@ mercadoPagoRouter.post("/mercado-pago-payments", async (req, res) => {
             body: {
                 transaction_amount: Number(transaction_amount),
                 token,
-                description: "DeepDev Studio - Servicio Digital",
+                description: "Hidden Security - Curso Digital Ciber-Seguridad",
                 installments: Number(installments),
                 payment_method_id,
                 issuer_id: issuer_id ? String(issuer_id) : undefined,
@@ -123,29 +123,6 @@ mercadoPagoRouter.post("/mercado-pago-payments", async (req, res) => {
         const result = await paymentInstance.create(paymentData);
 
         if (result.status === "approved") {
-            
-            const stockOperations = items.map(item => {
-                if (item.id !== item.productId) {
-                  
-                    return {
-                        updateOne: {
-                            filter: { _id: item.productId, "variantes._id": item.id },
-                            update: { $inc: { "variantes.$.stock": -item.cantidad } } 
-                        }
-                    };
-                } else {
-                   
-                    return {
-                        updateOne: {
-                            filter: { _id: item.productId },
-                            update: { $inc: { stock_base: -item.cantidad } } 
-                        }
-                    };
-                }
-            });
-
-            await Product.bulkWrite(stockOperations);
-
             if (couponData) {
                 if (couponData.type === 'single_use') {
                     await Coupon.findByIdAndUpdate(couponData._id, { 
@@ -157,7 +134,7 @@ mercadoPagoRouter.post("/mercado-pago-payments", async (req, res) => {
                         $addToSet: { usedBy: sanitizedEmail }
                     });
                 }
-                console.log("✅ [SIMULACIÓN] Cupón quemado y desactivado correctamente.");
+                console.log("Cupón utilizado o desactivado correctamente! 🟢");
             }
             await Cart.findOneAndDelete({ userEmail: sanitizedEmail });
         }
@@ -178,7 +155,7 @@ mercadoPagoRouter.post("/mercado-pago-payments", async (req, res) => {
         res.status(201).json({ status: result.status, status_detail: result.status_detail, id: result.id });
 
     } catch (error) {
-        console.error(`[${new Date().toISOString()}] ERROR CRÍTICO EN PAGO/STOCK:`, error.response?.data || error.message);
+        console.error(`[${new Date().toISOString()}] ERROR CRÍTICO EN PAGO/STOCK: R: MP-PYM`, error.response?.data || error.message);
         res.status(500).json({ error: "Error interno al procesar la transacción 🔴" });
     }
 });

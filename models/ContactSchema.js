@@ -8,24 +8,12 @@ const ContactSchema = new mongoose.Schema({
         maxlength: 30,
         set: value => value.toUpperCase()
     },
-    lastName: {
+    surname: {
         type: String,
         required: true,
         minlength: 3,      
         maxlength: 30,
         set: value => value.toUpperCase()
-    },
-    companyName: {
-        type: String,
-        required: true,
-        minlength: 3,      
-        maxlength: 50,
-    },
-    contactRole: {
-        type: String,
-        required: true,
-        minlength: 3,      
-        maxlength: 30,
     },
     email: {
         type: String,
@@ -37,50 +25,15 @@ const ContactSchema = new mongoose.Schema({
         required: true,
         match: /^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6}$/,
     },
-    phone: {
+    tel: {
         type: String,
         required: true
     },
-    projectOption: {
-        type: String,
-        required: true,
-        minlength: 3,      
-        maxlength: 50,
-    },
-    typeOfWork: {
-        type: String,
-        required: true,
-        minlength: 3,      
-        maxlength: 50,
-    },
-    currentUrl: {
-        type: String,
-        required: false,   
-        maxlength: 50,
-    },
-    description: {
+    text: {
         type: String,
         required: true,
         minlength: 3,      
         maxlength: 500,
-    },
-    projectGoal: {
-        type: String,
-        required: true,
-        minlength: 3,      
-        maxlength: 50,
-    },
-    budgetRange: {
-        type: String,
-        required: true,
-        minlength: 3,      
-        maxlength: 50,
-    },
-    availableTime: {
-        type: String,
-        required: true,
-        minlength: 3,      
-        maxlength: 50,
     },
 }, { timestamps: true })
 

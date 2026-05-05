@@ -9,95 +9,162 @@ const adminMiddleware = require('../middleware/adminMiddleware');
 
 const esProduccion = (process.env.NODE_ENV === 'production');
 
-// CREAR NUEVO CUPÓN
+// CREAR CUPÓN 
 cartRouter.post("/api/coupons/create", adminMiddleware, async (req, res) => {
     const { couponData } = req.body;
-
+ 
     if (!couponData || typeof couponData !== 'object') {
         return res.status(400).json({ message: "Datos de cupón no proporcionados o formato inválido 🔴" });
     }
-
-    const { code, discount, type, expiryDate } = couponData;
-
+ 
+    const { code, discount, type, expiryDate, maxUses, scope, allowedPlans } = couponData;
+ 
     if (!code || !discount || !type) {
-        return res.status(400).json({ message: "Faltan campos obligatorios: code, discount y type son requeridos 🔴" });
+        return res.status(400).json({ message: "Faltan campos obligatorios: code, discount y type 🔴" });
     }
-
+ 
     const discountNum = Number(discount);
     if (isNaN(discountNum) || discountNum <= 0 || discountNum > 100) {
         return res.status(400).json({ message: "El descuento debe ser un número entre 1 y 100 🔴" });
     }
-
-    const validTypes = ['single_use', 'date_limited'];
+ 
+    const validTypes = ['single_use', 'date_limited', 'limited_uses'];
     if (!validTypes.includes(type)) {
-        return res.status(400).json({ message: "Tipo de cupón inválido. Use 'single_use' o 'date_limited' 🔴" });
+        return res.status(400).json({ message: "Tipo de cupón inválido 🔴" });
     }
-
+ 
     if (type === 'date_limited') {
-        if (!expiryDate) {
+        if (!expiryDate || typeof expiryDate !== 'string') {
             return res.status(400).json({ message: "Los cupones por fecha requieren una 'expiryDate' 🔴" });
         }
-        const date = new Date(expiryDate);
+        const date = new Date(expiryDate + "T23:59:59.000Z");
         if (isNaN(date.getTime()) || date <= new Date()) {
-            return res.status(400).json({ message: "La fecha de expiración debe ser una fecha válida y futura 🔴" });
+            return res.status(400).json({ message: "La fecha de expiración debe ser válida y futura 🔴" });
         }
     }
-
+ 
+    if (type === 'limited_uses') {
+        const maxUsesNum = Number(maxUses);
+        if (!maxUses || isNaN(maxUsesNum) || !Number.isInteger(maxUsesNum) || maxUsesNum < 1) {
+            return res.status(400).json({ message: "Los cupones con límite de usos requieren un maxUses entero >= 1 🔴" });
+        }
+    }
+ 
+    // scope: 'all' = todos los planes | 'plans' = planes específicos
+    const validScopes = ['all', 'plans'];
+    const finalScope = scope || 'all';
+    if (!validScopes.includes(finalScope)) {
+        return res.status(400).json({ message: "Scope inválido. Use 'all' o 'plans' 🔴" });
+    }
+ 
+    if (finalScope === 'plans') {
+        const validPlans = ['starter', 'pro', 'elite', 'voucher', 'b2b_seis', 'b2b_doce'];
+        if (!Array.isArray(allowedPlans) || allowedPlans.length === 0) {
+            return res.status(400).json({ message: "Debés especificar al menos un plan 🔴" });
+        }
+        const invalid = allowedPlans.filter(p => !validPlans.includes(p));
+        if (invalid.length > 0) {
+            return res.status(400).json({ message: `Planes inválidos: ${invalid.join(', ')} 🔴` });
+        }
+    }
+ 
     try {
         const sanitizedCode = code.trim().toUpperCase();
-        
+ 
         const exists = await Coupon.findOne({ code: sanitizedCode });
         if (exists) {
-            return res.status(409).json({ message: "El código de cupón ya existe en el sistema 🔴" });
+            return res.status(409).json({ message: "El código de cupón ya existe 🔴" });
         }
-
+ 
         const newCoupon = await Coupon.create({
-            code: sanitizedCode,
-            discount: discountNum,
+            code:        sanitizedCode,
+            discount:    discountNum,
             type,
-            expiryDate: type === 'date_limited' ? new Date(expiryDate) : null,
-            isActive: true,
-            usedBy: []
+            expiryDate:  type === 'date_limited' ? new Date(expiryDate + "T23:59:59.000Z") : null,
+            maxUses:     type === 'limited_uses'  ? Number(maxUses) : null,
+            usesCount:   0,
+            scope:       finalScope,
+            allowedPlans: finalScope === 'plans' ? allowedPlans.map(p => p.toLowerCase()) : [],
+            isActive:    true,
+            usedBy:      []
         });
-
+ 
         res.status(201).json({ message: "Cupón creado con éxito 🟢", coupon: newCoupon });
-
+ 
     } catch (error) {
         console.error(`[${new Date().toISOString()}] ERROR_COUPON_CREATE:`, error);
         res.status(500).json({ message: "Error interno al procesar el cupón 🔴" });
     }
 });
-
-// VALIDAR CUPONES DESCUENTO
+ 
+ 
+// VALIDAR CUPÓN 
 cartRouter.post("/api/coupons/validate", verifyToken, async (req, res) => {
-    const { code, email } = req.body;
-
-    const sanitizedCode = code?.toString().trim().toUpperCase();
-    const sanitizedEmail = email?.toString().trim().toLowerCase();
-
-    if (!sanitizedCode || !sanitizedEmail) {
-        return res.status(400).json({ message: "Código y email son requeridos 🔴" });
+    const { code, email, planId } = req.body;
+ 
+    if (!code || typeof code !== 'string') {
+        return res.status(400).json({ message: "El código debe ser un string 🔴" });
     }
+    if (!email || typeof email !== 'string') {
+        return res.status(400).json({ message: "El email debe ser un string 🔴" });
+    }
+    if (!planId || typeof planId !== 'string') {
+        return res.status(400).json({ message: "El planId debe ser un string 🔴" });
+    }
+ 
+    const sanitizedCode  = code.trim().toUpperCase();
+    const sanitizedEmail = email.trim().toLowerCase();
+    const sanitizedPlan  = planId.trim().toLowerCase();
+ 
     try {
         const coupon = await Coupon.findOne({ code: sanitizedCode, isActive: true });
-
+ 
         if (!coupon) {
             return res.status(404).json({ message: "Cupón no encontrado o inactivo 🔴" });
         }
-
-        if (coupon.type === 'date_limited' && coupon.expiryDate < new Date()) {
-            return res.status(400).json({ message: "El cupón ha expirado ⚠️" });
+ 
+        // ── validaciones por tipo ──
+        if (coupon.type === 'date_limited') {
+            if (coupon.expiryDate < new Date()) {
+                return res.status(400).json({ message: "El cupón ha expirado ⚠️" });
+            }
         }
-
-        if (coupon.type === 'single_use' && coupon.usedBy.includes(email)) {
-            return res.status(400).json({ message: "Ya has utilizado este cupón 🔴" });
+ 
+        if (coupon.type === 'single_use') {
+            if (coupon.usedBy.includes(sanitizedEmail)) {
+                return res.status(400).json({ message: "Ya utilizaste este cupón 🔴" });
+            }
         }
-
-        res.status(200).json({ message: "Cupón aplicado con éxito 🟢", coupon: { code: coupon.code, discount: coupon.discount } });
-
+ 
+        if (coupon.type === 'limited_uses') {
+            if (coupon.maxUses !== null && coupon.usesCount >= coupon.maxUses) {
+                return res.status(400).json({ message: "Este cupón alcanzó su límite de usos ⚠️" });
+            }
+        }
+ 
+        // ── validación de scope ──
+        if (coupon.scope === 'plans') {
+            if (!coupon.allowedPlans.includes(sanitizedPlan)) {
+                return res.status(400).json({
+                    message: `Este cupón no aplica al plan ${sanitizedPlan.toUpperCase()} 🔴`
+                });
+            }
+        }
+ 
+        res.status(200).json({
+            message: "Cupón aplicado con éxito 🟢",
+            coupon: {
+                code:         coupon.code,
+                discount:     coupon.discount,
+                type:         coupon.type,
+                scope:        coupon.scope,
+                allowedPlans: coupon.allowedPlans,
+            }
+        });
+ 
     } catch (error) {
-        console.error(`[${new Date().toISOString()}] ERROR en validar cupón cartRouter = POST :`, error);
-        res.status(500).json({ message: "Error interno al validar cupón" });
+        console.error(`[${new Date().toISOString()}] ERROR_COUPON_VALIDATE:`, error);
+        res.status(500).json({ message: "Error interno al validar cupón 🔴" });
     }
 });
 
