@@ -45,5 +45,7 @@ __pycache__/
 venv/
 .venv/
 
-# --- Make Admin ---
+# --- Make Admin/Enterprise ---
 makeAdmin.js
+makeEnterprise.js
+clearPurchased.js

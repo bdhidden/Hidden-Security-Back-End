@@ -3,8 +3,11 @@ const express = require("express")
 const paymentsRouter = express.Router()
 // Mongo
 const PaymentsMongo = require("../models/Payments")
+const Coupon = require("../models/CouponSchema")
 
 const adminMiddleware = require("../middleware/adminMiddleware")
+const verifyToken = require("../middleware/authMiddleware")
+const auth = require("../config/firebase")
 
 const esProduccion = (process.env.NODE_ENV === 'production');
 
@@ -43,117 +46,150 @@ paymentsRouter.get("/all-tickets", adminMiddleware, async (req, res) => {
 });
 
 // TEST REAL PAYMENT
-/* paymentsRouter.post("/test-payment-complete", async (req, res) => {
+const VALID_PLANS = ['starter', 'pro', 'elite', 'voucher', 'b2b_seis', 'b2b_doce'];
+ 
+paymentsRouter.post("/test-course-payment", verifyToken, async (req, res) => {
     const { transaction_amount, payer, idempotencyKey, items, couponCode } = req.body;
-
-    console.log("🧪 [SIMULACIÓN] Iniciando proceso completo de prueba...");
-
-    if (!transaction_amount || !payer || !items || !Array.isArray(items)) {
-        return res.status(400).json({ message: "Faltan datos para simular el proceso! 🔴" });
+ 
+    console.log("🧪 [CURSO_SIMULACIÓN] Iniciando proceso de prueba...");
+ 
+    // ── validaciones básicas ──────────────────────────────────────────────────
+    if (!transaction_amount || !payer?.email || !items || !Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ message: "Faltan datos: transaction_amount, payer.email e items son requeridos 🔴" });
     }
-
-    const sanitizedEmail = payer.email?.toLowerCase() || "test@email.com";
-
+ 
+    const invalidItems = items.filter(i => !VALID_PLANS.includes(i));
+    if (invalidItems.length > 0) {
+        return res.status(400).json({ message: `Plans inválidos: ${invalidItems.join(', ')} 🔴` });
+    }
+ 
+    const sanitizedEmail = payer.email.trim().toLowerCase();
+    const uid = req.user.uid; 
+ 
     try {
-        for (const item of items) {
-            if (typeof item.cantidad !== 'number' || isNaN(item.cantidad) || item.cantidad <= 0) {
-                return res.status(409).json({ message: `Cantidad inválida: ${item.nombre} 🔴` });
-            }
-            if (item.cantidad > item.stockMax) {
-                return res.status(409).json({ message: `Stock insuficiente para simulación: ${item.nombre} 🔴` });
-            }
-        }
-        let couponData = null;
+        let appliedDiscount = 0;
+ 
         if (couponCode) {
-            const sanitizedCode = couponCode.toUpperCase().trim();
+            const sanitizedCode = couponCode.trim().toUpperCase();
             const coupon = await Coupon.findOne({ code: sanitizedCode, isActive: true });
+ 
             if (!coupon) {
-                return res.status(404).json({ message: "El cupón enviado no existe o ya no está activo 🔴" });
+                return res.status(404).json({ message: "Cupón no encontrado o inactivo 🔴" });
             }
+ 
+            // expiración
             if (coupon.type === 'date_limited' && coupon.expiryDate < new Date()) {
                 await Coupon.findByIdAndUpdate(coupon._id, { isActive: false });
-                return res.status(400).json({ message: "El cupón ha expirado en este momento ⚠️" });
+                return res.status(400).json({ message: "El cupón expiró ⚠️" });
             }
+ 
+            // ya usado por este usuario
             if (coupon.type === 'single_use' && coupon.usedBy.includes(sanitizedEmail)) {
-                return res.status(400).json({ message: "Este cupón ya fue utilizado por tu cuenta 🔴" });
+                return res.status(400).json({ message: "El cupón ya ha sido usado! 🔴" });
             }
-            couponData = coupon; 
-            console.log(`✅ Cupón ${sanitizedCode} validado internamente.`);
-        }
-
-        const fakeMPResult = {
-            id: "fake-mp-" + Math.floor(Math.random() * 1000000),
-            status: "approved", 
-            status_detail: "accredited"
-        };
-
-        console.log("🧪 [SIMULACIÓN] MP respondió:", fakeMPResult.status);
-
-        if (fakeMPResult.status === "approved") {
-            
-            const stockOperations = items.map(item => {
-                const filter = item.id !== item.productId 
-                    ? { _id: item.productId, "variantes._id": item.id } 
-                    : { _id: item.productId };
-                
-                const updatePath = item.id !== item.productId 
-                    ? "variantes.$.stock" 
-                    : "stock_base";
-
-                return {
-                    updateOne: {
-                        filter: filter,
-                        update: { $inc: { [updatePath]: -item.cantidad } }
-                    }
-                };
-            });
-
-            await Product.bulkWrite(stockOperations);
-            console.log("✅ [SIMULACIÓN] Stock actualizado.");
-
-            if (couponData) {
-                if (couponData.type === 'single_use') {
-                    await Coupon.findByIdAndUpdate(couponData._id, { 
-                        $addToSet: { usedBy: sanitizedEmail },
-                        isActive: false // Se desactiva porque ya se usó
-                    });
-                } else {
-                    // Si es date_limited, solo registramos quién lo usó pero sigue activo hasta que expire
-                    await Coupon.findByIdAndUpdate(couponData._id, { 
-                        $addToSet: { usedBy: sanitizedEmail }
+ 
+            // límite de usos totales
+            if (coupon.type === 'limited_uses') {
+                if (coupon.maxUses !== null && coupon.usesCount >= coupon.maxUses) {
+                    await Coupon.findByIdAndUpdate(coupon._id, { isActive: false });
+                    return res.status(400).json({ message: "El cupón alcanzó su límite de usos ⚠️" });
+                }
+            }
+ 
+            // scope: verificar que el cupón aplica a al menos uno de los items
+            if (coupon.scope === 'plans') {
+                const applies = items.some(planId => coupon.allowedPlans.includes(planId));
+                if (!applies) {
+                    return res.status(400).json({
+                        message: `Este cupón no aplica a ninguno de los planes seleccionados 🔴`
                     });
                 }
-                console.log("✅ [SIMULACIÓN] Cupón quemado y desactivado correctamente.");
             }
-
-            await Cart.findOneAndDelete({ userEmail: sanitizedEmail });
-            console.log("✅ [SIMULACIÓN] Carrito eliminado de DB.");
+ 
+            appliedDiscount = coupon.discount;
+            console.log(`✅ Cupón ${sanitizedCode} válido. Descuento: ${appliedDiscount}%`);
+ 
+            // ── consumir el cupón ──
+            if (coupon.type === 'single_use') {
+                await Coupon.findByIdAndUpdate(coupon._id, {
+                    $addToSet: { usedBy: sanitizedEmail },
+                    isActive: false
+                });
+            } else if (coupon.type === 'limited_uses') {
+                const updated = await Coupon.findByIdAndUpdate(
+                    coupon._id,
+                    { $addToSet: { usedBy: sanitizedEmail }, $inc: { usesCount: 1 } },
+                    { new: true }
+                );
+                // si llegó al límite, desactivarlo
+                if (updated.maxUses !== null && updated.usesCount >= updated.maxUses) {
+                    await Coupon.findByIdAndUpdate(coupon._id, { isActive: false });
+                    console.log(`⚠️ Cupón ${sanitizedCode} desactivado por límite de usos alcanzado.`);
+                }
+            } else if (coupon.type === 'date_limited') {
+                // sigue activo hasta que expire, solo registramos quién lo usó
+                await Coupon.findByIdAndUpdate(coupon._id, {
+                    $addToSet: { usedBy: sanitizedEmail }
+                });
+            }
+ 
+            console.log(`✅ Cupón ${sanitizedCode} consumido correctamente.`);
         }
-
+ 
+        // ── 2. SIMULAR RESPUESTA DE MERCADO PAGO 
+        const fakeMPResult = {
+            id:            "fake-course-" + Math.floor(Math.random() * 1000000),
+            status:        "approved",
+            status_detail: "accredited"
+        };
+ 
+        console.log("🧪 [SIMULACIÓN] MP respondió:", fakeMPResult.status);
+ 
+        if (fakeMPResult.status !== "approved") {
+            return res.status(402).json({ message: "Pago rechazado en simulación", status: fakeMPResult.status });
+        }
+ 
+        // Traemos las claims actuales para no pisar compras anteriores
+        const userRecord = await auth.getUser(uid);
+        const currentClaims = userRecord.customClaims || {};
+        const existingItems = Array.isArray(currentClaims.purchases) ? currentClaims.purchases : [];
+ 
+        // Merge sin duplicados
+        const updatedPurchases = [...new Set([...existingItems, ...items])];
+ 
+        await auth.setCustomUserClaims(uid, { ...currentClaims, purchases: updatedPurchases });
+ 
+        console.log(`✅ Firebase claims seteadas para ${uid}:`, updatedPurchases);
+ 
         const nuevoPago = new PaymentsMongo({
-            orderId: idempotencyKey || `TEST-FULL-${Date.now()}`, 
-            client_id: payer.id_internal || "test-client-id", 
-            email: sanitizedEmail,
-            plan: "Landing Basic",
-            amount: Number(transaction_amount),
-            mp_payment_id: fakeMPResult.id,     
-            status: fakeMPResult.status,
-            date: new Date()
+            orderId:       idempotencyKey || `TEST-COURSE-${Date.now()}`,
+            client_id:     uid,
+            email:         sanitizedEmail,
+            plan:          items.join('+'),   // ejemplo como quedaría: "STARTER+VOUCHER"
+            amount:        Number(transaction_amount),
+            mp_payment_id: fakeMPResult.id,
+            status:        fakeMPResult.status,
+            couponUsed:    couponCode ? couponCode.toUpperCase() : null,
+            discount:      appliedDiscount,
+            date:          new Date()
         });
-
+ 
         await nuevoPago.save();
-        
-        res.status(200).json({ 
-            message: "Simulación completa terminada con éxito",
-            mp_status: fakeMPResult.status,
-            id: fakeMPResult.id,
-            db_updated: fakeMPResult.status === "approved"
+        console.log("✅ Pago guardado en DB.");
+ 
+        // ── 5. RESPUESTA 
+        return res.status(200).json({
+            message:    "Simulación de curso completada con éxito 🟢",
+            mp_status:  fakeMPResult.status,
+            mp_id:      fakeMPResult.id,
+            purchases:  updatedPurchases,
+            discount:   appliedDiscount > 0 ? `${appliedDiscount}%` : null,
         });
-
+ 
     } catch (error) {
-        console.error("❌ [SIMULACIÓN ERROR]:", error.message);
-        res.status(500).json({ error: "Error en la simulación completa", details: error.message });
+        console.error("❌ [CURSO_SIMULACIÓN ERROR]:", error.message);
+        return res.status(500).json({ error: "Error en la simulación de curso", details: error.message });
     }
 });
- */
+
 module.exports = paymentsRouter
