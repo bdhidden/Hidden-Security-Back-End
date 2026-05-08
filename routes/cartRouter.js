@@ -108,13 +108,17 @@ cartRouter.post("/api/coupons/validate", verifyToken, async (req, res) => {
     if (!email || typeof email !== 'string') {
         return res.status(400).json({ message: "El email debe ser un string 🔴" });
     }
-    if (!planId || typeof planId !== 'string') {
-        return res.status(400).json({ message: "El planId debe ser un string 🔴" });
+    if (!planId) {
+        return res.status(400).json({ message: "planId es requerido 🔴" });
     }
  
     const sanitizedCode  = code.trim().toUpperCase();
     const sanitizedEmail = email.trim().toLowerCase();
-    const sanitizedPlan  = planId.trim().toLowerCase();
+ 
+    // normalizar planId siempre a array
+    const planIds = Array.isArray(planId)
+        ? planId.map(p => p.trim().toLowerCase())
+        : [planId.trim().toLowerCase()];
  
     try {
         const coupon = await Coupon.findOne({ code: sanitizedCode, isActive: true });
@@ -126,6 +130,7 @@ cartRouter.post("/api/coupons/validate", verifyToken, async (req, res) => {
         // ── validaciones por tipo ──
         if (coupon.type === 'date_limited') {
             if (coupon.expiryDate < new Date()) {
+                await Coupon.findByIdAndUpdate(coupon._id, { isActive: false });
                 return res.status(400).json({ message: "El cupón ha expirado ⚠️" });
             }
         }
@@ -138,15 +143,17 @@ cartRouter.post("/api/coupons/validate", verifyToken, async (req, res) => {
  
         if (coupon.type === 'limited_uses') {
             if (coupon.maxUses !== null && coupon.usesCount >= coupon.maxUses) {
+                await Coupon.findByIdAndUpdate(coupon._id, { isActive: false });
                 return res.status(400).json({ message: "Este cupón alcanzó su límite de usos ⚠️" });
             }
         }
  
-        // ── validación de scope ──
+        // ── validación de scope 
         if (coupon.scope === 'plans') {
-            if (!coupon.allowedPlans.includes(sanitizedPlan)) {
+            const applies = planIds.some(p => coupon.allowedPlans.includes(p));
+            if (!applies) {
                 return res.status(400).json({
-                    message: `Este cupón no aplica al plan ${sanitizedPlan.toUpperCase()} 🔴`
+                    message: `Este cupón no aplica a ninguno de los planes seleccionados 🔴`
                 });
             }
         }
