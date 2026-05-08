@@ -9,13 +9,13 @@ const Contact = require("../models/ContactSchema")
 const esProduccion = (process.env.NODE_ENV === 'production');
 
 contactRouter.post("/contact", async (req, res) => {
-    const { name, surname, email, tel, text } = req.body
-    
-    if(!name || !surname || !email || !tel || !text){
-        return res.status(400).json({ message: "All required fields must be filled! 🔴" })
+    const { name, surname, email, tel, text } = req.body;  // directo, sin .contact
+
+    if (!name || !surname || !email || !tel || !text) {
+        return res.status(400).json({ message: "All required fields must be filled! 🔴" });
     }
     try {
-        const form = { name, surname, email, tel, text}
+        const form = { name: name, surname: surname, email: email, tel: tel, text: text }
         await Contact.create(form)
 
         return res.status(201).json({ message: "Contact form submitted successfully! 🟢" })

@@ -66,7 +66,7 @@ const esProduccion = (process.env.NODE_ENV === 'production');
     }
 }); */
 
-// RUTA COBRA PARA ECOMMERCE PLANTILLAS 
+// RUTA COBRA PARA ECOMMERCE 
 mercadoPagoRouter.post("/mercado-pago-payments", async (req, res) => {
     const { token, issuer_id, payment_method_id, transaction_amount, installments, payer, idempotencyKey, plan, items, couponCode } = req.body;
     
