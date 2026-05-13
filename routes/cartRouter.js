@@ -199,9 +199,6 @@ cartRouter.delete("/api/coupons/:id", adminMiddleware, async (req, res) => {
 // CREAR - SINCRONIZAR CARRITO
 cartRouter.post("/api/cart/sync", verifyToken, async (req, res) => {
     const { email, items, appliedCoupon, merge = false } = req.body; 
-    console.log("CART SYN REQ BODY", req.body);
-    
-    console.log("CART SYNC", items[0]?.cuotas_sin_interes);
     
     const sanitizedEmail = email?.trim().toLowerCase();
     

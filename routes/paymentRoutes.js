@@ -9,6 +9,8 @@ const adminMiddleware = require("../middleware/adminMiddleware")
 const verifyToken = require("../middleware/authMiddleware")
 const auth = require("../config/firebase")
 
+const { notifyNewSale } = require("../sseManager/sseManajer")
+
 const esProduccion = (process.env.NODE_ENV === 'production');
 
 paymentsRouter.post("/tickets", async (req, res) => {
@@ -47,38 +49,46 @@ paymentsRouter.get("/all-tickets", adminMiddleware, async (req, res) => {
 
 // TEST REAL PAYMENT
 const VALID_PLANS = ['starter', 'pro', 'elite', 'voucher', 'b2b_seis', 'b2b_doce'];
- 
+
+// ── FUENTE DE VERDAD DE PRECIOS (solo en el servidor) ────────────────────────
+const PLAN_PRICES = {
+    starter:  80000,
+    pro:      250000,
+    elite:    350000,
+    voucher:  180000,
+    b2b_seis: 400000,
+    b2b_doce: 700000,
+};
+
 // Planes que incluyen vouchers automáticos al comprarse
 const BUNDLED_VOUCHERS = {
     'elite': 2,  // elite incluye 2 vouchers (re-intento)
     'pro':   1,  // pro incluye 1 voucher
 };
- 
+
 paymentsRouter.post("/test-course-payment", verifyToken, async (req, res) => {
-    const { transaction_amount, payer, idempotencyKey, items, couponCode } = req.body;
-    // items: array de planIds: ["starter"] o ["starter", "voucher"]
- 
+    // transaction_amount ya NO viene del front — se calcula acá
+    const { payer, idempotencyKey, items, couponCode } = req.body;
+
     console.log("🧪 [CURSO_SIMULACIÓN] Iniciando proceso de prueba...");
- 
+
     // ── validaciones básicas ──────────────────────────────────────────────────
-    if (!transaction_amount || !payer?.email || !items || !Array.isArray(items) || items.length === 0) {
-        return res.status(400).json({ message: "Faltan datos: transaction_amount, payer.email e items son requeridos 🔴" });
+    if (!payer?.email || !items || !Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ message: "Faltan datos: payer.email e items son requeridos 🔴" });
     }
- 
+
     const invalidItems = items.filter(i => !VALID_PLANS.includes(i));
     if (invalidItems.length > 0) {
         return res.status(400).json({ message: `Plans inválidos: ${invalidItems.join(', ')} 🔴` });
     }
- 
+
     const sanitizedEmail = payer.email.trim().toLowerCase();
+    const sanitizedPhone = payer.phone ? payer.phone.trim() : null;  // ✅ teléfono
     const uid            = req.user.uid;
- 
+
     try {
- 
+
         // ── 1. EXPANDIR ITEMS CON VOUCHERS INCLUIDOS EN EL PLAN ──────────────
-        // Si compra elite → se agregan 2 vouchers automáticamente
-        // Si compra pro   → se agrega 1 voucher automáticamente
-        // Si compra starter + voucher manual → se respeta el voucher del frontend
         const expandedItems = [];
         for (const item of items) {
             expandedItems.push(item);
@@ -90,36 +100,36 @@ paymentsRouter.post("/test-course-payment", verifyToken, async (req, res) => {
                 console.log(`✅ Plan ${item.toUpperCase()} incluye ${count} voucher(s) automático(s).`);
             }
         }
- 
+
         console.log("📦 Items expandidos:", expandedItems);
- 
+
         // ── 2. VALIDAR Y CONSUMIR CUPÓN ───────────────────────────────────────
         let appliedDiscount = 0;
- 
+
         if (couponCode) {
             const sanitizedCode = couponCode.trim().toUpperCase();
             const coupon = await Coupon.findOne({ code: sanitizedCode, isActive: true });
- 
+
             if (!coupon) {
                 return res.status(404).json({ message: "Cupón no encontrado o inactivo 🔴" });
             }
- 
+
             if (coupon.type === 'date_limited' && coupon.expiryDate < new Date()) {
                 await Coupon.findByIdAndUpdate(coupon._id, { isActive: false });
                 return res.status(400).json({ message: "El cupón expiró ⚠️" });
             }
- 
+
             if (coupon.type === 'single_use' && coupon.usedBy.includes(sanitizedEmail)) {
                 return res.status(400).json({ message: "Ya usaste este cupón 🔴" });
             }
- 
+
             if (coupon.type === 'limited_uses') {
                 if (coupon.maxUses !== null && coupon.usesCount >= coupon.maxUses) {
                     await Coupon.findByIdAndUpdate(coupon._id, { isActive: false });
                     return res.status(400).json({ message: "El cupón alcanzó su límite de usos ⚠️" });
                 }
             }
- 
+
             if (coupon.scope === 'plans') {
                 const applies = items.some(planId => coupon.allowedPlans.includes(planId));
                 if (!applies) {
@@ -128,10 +138,10 @@ paymentsRouter.post("/test-course-payment", verifyToken, async (req, res) => {
                     });
                 }
             }
- 
+
             appliedDiscount = coupon.discount;
             console.log(`✅ Cupón ${sanitizedCode} válido. Descuento: ${appliedDiscount}%`);
- 
+
             if (coupon.type === 'single_use') {
                 await Coupon.findByIdAndUpdate(coupon._id, {
                     $addToSet: { usedBy: sanitizedEmail },
@@ -152,76 +162,92 @@ paymentsRouter.post("/test-course-payment", verifyToken, async (req, res) => {
                     $addToSet: { usedBy: sanitizedEmail }
                 });
             }
- 
+
             console.log(`✅ Cupón ${sanitizedCode} consumido correctamente.`);
         }
- 
-        // ── 3. SIMULAR RESPUESTA DE MERCADO PAGO ─────────────────────────────
+
+        // ── 3. CALCULAR MONTO EN EL SERVIDOR ─────────────────────────────────
+        // Se calcula sobre los items originales (no los bundled)
+        const baseAmount  = items.reduce((acc, planId) => acc + (PLAN_PRICES[planId] || 0), 0);
+        const finalAmount = appliedDiscount > 0
+            ? Math.round(baseAmount * (1 - appliedDiscount / 100))
+            : baseAmount;
+
+        console.log(`💰 Monto calculado → base: $${baseAmount} | descuento: ${appliedDiscount}% | final: $${finalAmount}`);
+
+        // ── 4. SIMULAR RESPUESTA DE MERCADO PAGO ─────────────────────────────
         const fakeMPResult = {
             id:            "fake-course-" + Math.floor(Math.random() * 1000000),
             status:        "approved",
             status_detail: "accredited"
         };
- 
+
         console.log("🧪 [SIMULACIÓN] MP respondió:", fakeMPResult.status);
- 
+
         if (fakeMPResult.status !== "approved") {
             return res.status(402).json({ message: "Pago rechazado en simulación", status: fakeMPResult.status });
         }
- 
-        // ── 4. SETEAR FIREBASE CUSTOM CLAIMS ────────────────────────────────
+
+        // ── 5. SETEAR FIREBASE CUSTOM CLAIMS ─────────────────────────────────
         const userRecord    = await auth.getUser(uid);
         const currentClaims = userRecord.customClaims || {};
         const existingItems = Array.isArray(currentClaims.purchases) ? currentClaims.purchases : [];
- 
-        // Merge: sin duplicados para planes normales, voucher se acumula
+
         const nonVoucherExisting = existingItems.filter(i => i !== 'voucher');
         const nonVoucherNew      = expandedItems.filter(i => i !== 'voucher');
         const voucherCount       = existingItems.filter(i => i === 'voucher').length
                                  + expandedItems.filter(i => i === 'voucher').length;
- 
+
         const updatedPurchases = [
             ...new Set([...nonVoucherExisting, ...nonVoucherNew]),
             ...Array(voucherCount).fill('voucher')
         ];
- 
+
         await auth.setCustomUserClaims(uid, {
             ...currentClaims,
             purchases: updatedPurchases
         });
- 
+
         console.log(`✅ Firebase claims seteadas para ${uid}:`, updatedPurchases);
- 
-        // ── 5. GUARDAR PAGO EN DB ────────────────────────────────────────────
+
+        // ── 6. GUARDAR PAGO EN DB ─────────────────────────────────────────────
         const nuevoPago = new PaymentsMongo({
             orderId:       idempotencyKey || `TEST-COURSE-${Date.now()}`,
             client_id:     uid,
             email:         sanitizedEmail,
-            plan:          items.join('+'),   // lo que realmente compró, sin los bundled
-            amount:        Number(transaction_amount),
+            phone:         sanitizedPhone,               // ✅ teléfono guardado
+            plan:          items.join('+'),
+            amount:        finalAmount,                  // ✅ calculado en backend
             mp_payment_id: fakeMPResult.id,
             status:        fakeMPResult.status,
             couponUsed:    couponCode ? couponCode.toUpperCase() : null,
             discount:      appliedDiscount,
             date:          new Date()
         });
- 
+
         await nuevoPago.save();
+        notifyNewSale(nuevoPago);
         console.log("✅ Pago guardado en DB.");
- 
-        // ── 6. RESPUESTA ─────────────────────────────────────────────────────
+
+        // ── 7. RESPUESTA 
         return res.status(200).json({
-            message:    "Simulación de curso completada con éxito 🟢",
-            mp_status:  fakeMPResult.status,
-            mp_id:      fakeMPResult.id,
-            purchases:  updatedPurchases,
-            discount:   appliedDiscount > 0 ? `${appliedDiscount}%` : null,
+            message:   "Simulación de curso completada con éxito 🟢",
+            mp_status: fakeMPResult.status,
+            mp_id:     fakeMPResult.id,
+            purchases: updatedPurchases,
+            discount:  appliedDiscount > 0 ? `${appliedDiscount}%` : null,
+            amount:    finalAmount,                     
         });
- 
+
     } catch (error) {
         console.error("❌ [CURSO_SIMULACIÓN ERROR]:", error.message);
         return res.status(500).json({ error: "Error en la simulación de curso", details: error.message });
     }
+});
+
+paymentsRouter.patch("/api/payments/:id/checked", adminMiddleware, async (req, res) => {
+    await PaymentsMongo.findByIdAndUpdate(req.params.id, { checked: req.body.checked });
+    res.json({ ok: true });
 });
 
 module.exports = paymentsRouter

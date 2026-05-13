@@ -28,8 +28,8 @@ const CartSchema = new mongoose.Schema({
 
 // Cart.js
 CartSchema.post('init', function(doc) {
-    console.log("-----------------------------------------");
-    console.log(">>> EJECUTANDO MIDDLEWARE INIT PARA:", doc.userEmail);
+   /*  console.log("-----------------------------------------");
+    console.log(">>> EJECUTANDO MIDDLEWARE INIT PARA:", doc.userEmail); */
     
     if (doc.appliedCoupon && doc.appliedCoupon.appliedAt) {
         const veinticuatroHoras = 24 * 60 * 60 * 1000;
@@ -37,11 +37,11 @@ CartSchema.post('init', function(doc) {
         const aplicadoEn = new Date(doc.appliedCoupon.appliedAt).getTime();
         const transcurrido = ahora - aplicadoEn;
 
-        console.log(`>>> Cupón detectado: ${doc.appliedCoupon.code}`);
-        console.log(`>>> Segundos transcurridos: ${Math.floor(transcurrido / 1000)}s`);
+        /* console.log(`>>> Cupón detectado: ${doc.appliedCoupon.code}`);
+        console.log(`>>> Segundos transcurridos: ${Math.floor(transcurrido / 1000)}s`); */
 
-        if (transcurrido > veinticuatroHoras) {
-            console.log(">>> ¡EXPIRADO! Borrando de la DB...");
+        if (transcurrido > veinticuatroHoras) {/* 
+            console.log(">>> ¡EXPIRADO! Borrando de la DB..."); */
             doc.appliedCoupon = undefined;
 
             mongoose.model("Cart").updateOne(
@@ -50,10 +50,10 @@ CartSchema.post('init', function(doc) {
             ).then(() => console.log(">>> DB Actualizada con éxito"))
              .catch(err => console.error("Error DB:", err));
         }
-    } else {
+    } /* else {
         console.log(">>> El carrito no tiene cupón o le falta la fecha.");
     }
-    console.log("-----------------------------------------");
+    console.log("-----------------------------------------"); */
 });
 
 const Cart = mongoose.model("Cart", CartSchema);

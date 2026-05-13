@@ -5,13 +5,14 @@ const { urlencoded } = require("body-parser")
 const cookieParser = require("cookie-parser")
 const dbConnection = require("./config/mongoose")
 const authRouter = require("./routes/authRouter")
-const contactRouter = require("./routes/contactRouter")
 const mailRouter = require("./nodemailer/nodemailer")
 const mercadoPagoRouter = require("./routes/mercadoPagoRouter")
 const raffleRouter = require("./routes/raffleRouter")
 const paymentsRouter = require("./routes/paymentRoutes")
 const firebaseRouter = require("./routes/firebaseRouter")
 const cartRouter = require("./routes/cartRouter")
+const adminMiddleware = require("./middleware/adminMiddleware")
+const { sseHandler } = require("./sseManager/sseManajer")
 const app = express()
 const PORT = process.env.PORT
 
@@ -29,8 +30,9 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }))
 
+app.get("/api/payments/stream", adminMiddleware, sseHandler);
+
 app.use(authRouter)
-app.use(contactRouter)
 app.use(mailRouter)
 app.use(mercadoPagoRouter)
 app.use(raffleRouter)
