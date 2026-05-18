@@ -13,7 +13,11 @@ const firebaseRouter = require("./routes/firebaseRouter")
 const cartRouter = require("./routes/cartRouter")
 const vacancyRouter = require("./routes/vacancyRouter")
 const adminMiddleware = require("./middleware/adminMiddleware")
+const enterpriseMiddleware = require("./middleware/enterpriseMiddleware")
+const certifiedMiddleware = require("./middleware/certificatedMiddleware")
 const { sseHandler } = require("./sseManager/sseManajer")
+const { applicantSseHandler } = require("./sseManager/sseApplicants")
+const { userSseHandler } = require("./sseManager/sseUserNotifications");
 const app = express()
 const PORT = process.env.PORT
 
@@ -32,6 +36,8 @@ app.use(cors({
 }))
 
 app.get("/api/payments/stream", adminMiddleware, sseHandler);
+app.get("/api/vacancy/applicants/stream", enterpriseMiddleware, applicantSseHandler);
+app.get("/api/user/notifications/stream", certifiedMiddleware, userSseHandler);
 
 app.use(authRouter)
 app.use(mailRouter)

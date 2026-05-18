@@ -49,3 +49,4 @@ venv/
 makeAdmin.js
 makeEnterprise.js
 clearPurchased.js
+makeCertificated.js

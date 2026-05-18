@@ -2,10 +2,11 @@ const express = require("express");
 const vacancyRouter  = express.Router();
 
 const { Vacancy, IT_SKILLS } = require("../models/vacancyModel");
-const enterpriseMiddleware = require("../middleware/enterpriseMiddleware");
+const enterpriseMiddleware  = require("../middleware/enterpriseMiddleware");
+const certifiedMiddleware   = require("../middleware/certificatedMiddleware");
+const { notifyNewApplicant, applicantSseHandler } = require("../sseManager/sseApplicants");
+const { notifyUser, userSseHandler } = require("../sseManager/sseUserNotifications");
 const esProduccion = process.env.NODE_ENV === "production";
-
-// ─── Helpers de validación ────────────────────────────────────────────────────
 
 const VALID_EXPERIENCE = ["Junior", "Semi-Senior", "Senior", "Lead", "Manager"];
 const VALID_MODALITY   = ["Remoto", "Presencial", "Híbrido"];
@@ -13,11 +14,6 @@ const VALID_CONTRACT   = ["Full-time", "Part-time", "Freelance", "Pasantía"];
 const VALID_STATUS     = ["active", "paused", "closed"];
 const VALID_CURRENCIES = ["USD", "ARS", "EUR", "BRL"];
 
-/**
- * @param {object} body     - req.body
- * @param {boolean} partial - true para PUT (solo campos enviados), false para POST (todos requeridos)
- * @returns {{ valid: boolean, errors: string[] }}
- */
 function validateVacancyBody(body, partial = false) {
   const errors = [];
   const has = (key) => body[key] !== undefined && body[key] !== null;
@@ -120,10 +116,76 @@ function validateVacancyBody(body, partial = false) {
   return { valid: errors.length === 0, errors };
 }
 
+// ─── Cierra automáticamente las vacantes vencidas de una empresa ──────────────
+async function autoCloseExpired(uid) {
+  try {
+    const now = new Date();
+    await Vacancy.updateMany(
+      {
+        publishedBy: uid,
+        status:      { $ne: "closed" },
+        closesAt:    { $lt: now, $ne: null },
+      },
+      { $set: { status: "closed" } }
+    );
+  } catch (err) {
+    console.error("autoCloseExpired error:", err.message);
+  }
+}
+
+// ─── GET /api/public/vacancies ───────────────────────────────────────────────
+// Pública: cualquier usuario puede ver vacantes activas
+// NO devuelve companyName, companyLogo, publishedBy — esos solo los ve el certificado al postularse
+vacancyRouter.get("/api/public/vacancies", async (req, res) => {
+  try {
+    const {
+      skill,
+      experienceLevel,
+      modality,
+      page  = 1,
+      limit = 12,
+    } = req.query;
+
+    const parsedPage  = parseInt(page);
+    const parsedLimit = parseInt(limit);
+
+    if (isNaN(parsedPage)  || parsedPage  < 1) return res.status(400).json({ message: "page debe ser un entero positivo" });
+    if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit> 100)  return res.status(400).json({ message: "limit debe ser entre 1 y 50" });
+
+    const filter = { status: "active" };
+
+    if (skill)           filter.skills          = { $elemMatch: { $regex: new RegExp(`^${skill.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") } };
+    if (experienceLevel) filter.experienceLevel = experienceLevel;
+    if (modality)        filter.modality        = modality;
+
+    const skip = (parsedPage - 1) * parsedLimit;
+
+    const [vacancies, total] = await Promise.all([
+      Vacancy.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parsedLimit)
+        .select("-publishedBy -applicants -__v")   // nunca exponer applicants ni publishedBy
+        .lean(),
+      Vacancy.countDocuments(filter),
+    ]);
+
+    res.json({
+      data: vacancies,
+      meta: { total, page: parsedPage, limit: parsedLimit, totalPages: Math.ceil(total / parsedLimit) },
+    });
+  } catch (err) {
+    console.error(esProduccion ? "Error GET /public/vacancies" : `Error GET /public/vacancies: ${err}`);
+    res.status(500).json({ message: "Error al obtener vacantes" });
+  }
+});
+
+// ─── GET /api/skills-list ─────────────────────────────────────────────────────
 vacancyRouter.get("/api/skills-list", enterpriseMiddleware, async (req, res) => {
   res.json({ skills: IT_SKILLS });
 });
 
+// ─── GET /api/vacancies ───────────────────────────────────────────────────────
 vacancyRouter.get("/api/vacancies", enterpriseMiddleware, async (req, res) => {
   try {
     const {
@@ -140,6 +202,10 @@ vacancyRouter.get("/api/vacancies", enterpriseMiddleware, async (req, res) => {
     if (isNaN(parsedPage)  || parsedPage  < 1) return res.status(400).json({ message: "page debe ser un entero positivo" });
     if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) return res.status(400).json({ message: "limit debe ser entre 1 y 100" });
 
+    // Cierra vencidas antes de responder — así el cliente siempre ve el estado real
+    await autoCloseExpired(req.user.uid);
+
+    // Filtro base: solo las vacantes de ESTA empresa
     const filter = { publishedBy: req.user.uid };
 
     if (status) {
@@ -158,7 +224,7 @@ vacancyRouter.get("/api/vacancies", enterpriseMiddleware, async (req, res) => {
 
     if (skill) {
       if (typeof skill !== "string") return res.status(400).json({ message: "skill debe ser un string" });
-      filter.skills = { $in: [skill] };
+      filter.skills = { $elemMatch: { $regex: new RegExp(`^${skill.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") } };
     }
 
     const skip = (parsedPage - 1) * parsedLimit;
@@ -183,11 +249,12 @@ vacancyRouter.get("/api/vacancies", enterpriseMiddleware, async (req, res) => {
   }
 });
 
+// ─── GET /api/vacancy/:id ─────────────────────────────────────────────────────
 vacancyRouter.get("/api/vacancy/:id", enterpriseMiddleware, async (req, res) => {
   try {
     const vacancy = await Vacancy.findOne({
       _id:         req.params.id,
-      publishedBy: req.user.uid,  
+      publishedBy: req.user.uid,
     }).lean();
 
     if (!vacancy) return res.status(404).json({ message: "Vacante no encontrada" });
@@ -199,9 +266,8 @@ vacancyRouter.get("/api/vacancy/:id", enterpriseMiddleware, async (req, res) => 
   }
 });
 
+// ─── POST /api/vacancy ────────────────────────────────────────────────────────
 vacancyRouter.post("/api/vacancy", enterpriseMiddleware, async (req, res) => {
-    console.log(req.body);
-    
   try {
     const { valid, errors } = validateVacancyBody(req.body, false);
     if (!valid) return res.status(400).json({ message: "Error de validación", errors });
@@ -213,26 +279,24 @@ vacancyRouter.post("/api/vacancy", enterpriseMiddleware, async (req, res) => {
     } = req.body;
 
     const vacancy = new Vacancy({
-        title:           title.trim(),
-        description:     description.trim(),
-        requirements:    requirements.trim(),
-        skills:          skills || [],
-        experienceLevel,
-        modality,
-        contractType,
-        location:        location?.trim() || "Remoto",
-        salaryRange:     salaryRange || { min: null, max: null, currency: "USD", visible: true },
-        closesAt:        closesAt || null,
-        publishedBy: req.user.uid,
-        companyName:     req.user.companyName || req.user.displayName || null,  
-        companyLogo:     req.user.companyLogo || req.user.photoURL   || null, 
-        });
+      title:        title.trim(),
+      description:  description.trim(),
+      requirements: requirements.trim(),
+      skills:       skills || [],
+      experienceLevel,
+      modality,
+      contractType,
+      location:     location?.trim() || "Remoto",
+      salaryRange:  salaryRange || { min: null, max: null, currency: "USD", visible: true },
+      closesAt:     closesAt || null,
+      publishedBy:  req.user.uid,
+      companyName:  req.user.companyName || null,
+      companyLogo:  req.user.companyLogo || null,
+    });
 
     const saved = await vacancy.save();
     res.status(201).json({ message: "Vacante creada exitosamente", data: saved });
   } catch (err) {
-
-        console.log("ERROR RESPONSE:", err);
     if (err.name === "ValidationError") {
       const errors = Object.values(err.errors).map((e) => e.message);
       return res.status(400).json({ message: "Error de validación en modelo", errors });
@@ -242,6 +306,7 @@ vacancyRouter.post("/api/vacancy", enterpriseMiddleware, async (req, res) => {
   }
 });
 
+// ─── PUT /api/vacancy/:id ─────────────────────────────────────────────────────
 vacancyRouter.put("/api/vacancy/:id", enterpriseMiddleware, async (req, res) => {
   try {
     const { valid, errors } = validateVacancyBody(req.body, true);
@@ -267,9 +332,9 @@ vacancyRouter.put("/api/vacancy/:id", enterpriseMiddleware, async (req, res) => 
     }
 
     const updated = await Vacancy.findOneAndUpdate(
-      { _id: req.params.id, publishedBy: req.user.uid },  
+      { _id: req.params.id, publishedBy: req.user.uid },
       { $set: updates },
-      { new: true, runValidators: true }
+      { returnDocument: "after", runValidators: true }
     );
 
     if (!updated) return res.status(404).json({ message: "Vacante no encontrada o no autorizado" });
@@ -285,6 +350,7 @@ vacancyRouter.put("/api/vacancy/:id", enterpriseMiddleware, async (req, res) => 
   }
 });
 
+// ─── PATCH /api/vacancy/:id/status ───────────────────────────────────────────
 vacancyRouter.patch("/api/vacancy/:id/status", enterpriseMiddleware, async (req, res) => {
   try {
     const { status } = req.body;
@@ -295,10 +361,19 @@ vacancyRouter.patch("/api/vacancy/:id/status", enterpriseMiddleware, async (req,
       return res.status(400).json({ message: `status inválido. Opciones: ${VALID_STATUS.join(", ")}` });
     }
 
+    // No permitir reactivar una vacante que ya venció
+    if (status === "active") {
+      const vacancy = await Vacancy.findOne({ _id: req.params.id, publishedBy: req.user.uid });
+      if (!vacancy) return res.status(404).json({ message: "Vacante no encontrada o no autorizado" });
+      if (vacancy.closesAt && new Date(vacancy.closesAt) < new Date()) {
+        return res.status(400).json({ message: "No se puede reactivar una vacante con fecha de cierre vencida" });
+      }
+    }
+
     const updated = await Vacancy.findOneAndUpdate(
       { _id: req.params.id, publishedBy: req.user.uid },
       { $set: { status } },
-      { new: true }
+      { returnDocument: "after" }
     );
 
     if (!updated) return res.status(404).json({ message: "Vacante no encontrada o no autorizado" });
@@ -310,29 +385,54 @@ vacancyRouter.patch("/api/vacancy/:id/status", enterpriseMiddleware, async (req,
   }
 });
 
-vacancyRouter.patch("/api/vacancy/:id/applicants", async (req, res) => {
+// ─── GET /api/user/applications ──────────────────────────────────────────────
+// Devuelve los vacancyIds donde el usuario ya aplicó
+vacancyRouter.get("/api/user/applications", certifiedMiddleware, async (req, res) => {
   try {
-    const { userId } = req.body;
+    const vacancies = await Vacancy.find(
+      { "applicants.userId": req.user.uid },
+      { _id: 1, title: 1, "applicants.$": 1 }   // solo el elemento que matchea
+    ).lean();
 
-    if (!userId) return res.status(400).json({ message: "userId es requerido" });
-    if (typeof userId !== "string" || !userId.trim()) {
-      return res.status(400).json({ message: "userId debe ser un string no vacío" });
-    }
+    const applications = vacancies.map((v) => ({
+      vacancyId: v._id,
+      title:     v.title,
+      status:    v.applicants?.[0]?.status ?? "pending",
+      appliedAt: v.applicants?.[0]?.appliedAt ?? null,
+    }));
+
+    res.json({ data: applications });
+  } catch (err) {
+    console.error(esProduccion ? "Error GET /user/applications" : `Error GET /user/applications: ${err}`);
+    res.status(500).json({ message: "Error al obtener postulaciones" });
+  }
+});
+
+// ─── PATCH /api/vacancy/:id/applicants ───────────────────────────────────────
+vacancyRouter.patch("/api/vacancy/:id/applicants", certifiedMiddleware, async (req, res) => {
+  try {
+    // userId viene del token, no del body — más seguro
+    const userId = req.user.uid;
 
     const vacancy = await Vacancy.findById(req.params.id);
     if (!vacancy) return res.status(404).json({ message: "Vacante no encontrada" });
     if (vacancy.status !== "active") {
       return res.status(400).json({ message: "No se puede aplicar a una vacante que no está activa" });
     }
-    if (vacancy.applicants.includes(userId.trim())) {
+
+    // Verificar duplicado con el nuevo modelo de objetos
+    const yaAplico = vacancy.applicants.some((a) => a.userId === userId.trim());
+    if (yaAplico) {
       return res.status(409).json({ message: "El usuario ya aplicó a esta vacante" });
     }
 
     const updated = await Vacancy.findByIdAndUpdate(
       req.params.id,
-      { $addToSet: { applicants: userId.trim() } },
-      { new: true }
+      { $push: { applicants: { userId: userId.trim(), status: "pending", appliedAt: new Date() } } },
+      { returnDocument: "after" }
     );
+
+    notifyNewApplicant(vacancy._id.toString(), vacancy.title, userId.trim());
 
     res.json({ message: "Aplicante registrado", applicantsCount: updated.applicants.length });
   } catch (err) {
@@ -342,11 +442,58 @@ vacancyRouter.patch("/api/vacancy/:id/applicants", async (req, res) => {
   }
 });
 
+// ─── PATCH /api/vacancy/:id/applicants/:userId/status ────────────────────────
+// La empresa cambia el estado de una postulación específica
+vacancyRouter.patch("/api/vacancy/:id/applicants/:userId/status", enterpriseMiddleware, async (req, res) => {
+  try {
+    const { status } = req.body;
+    const VALID_APPLICANT_STATUS = ["pending", "cv_read", "filter_1", "filter_2", "filter_3", "contact", "rejected"];
+
+    if (!status) return res.status(400).json({ message: "status es requerido" });
+    if (!VALID_APPLICANT_STATUS.includes(status)) {
+      return res.status(400).json({ message: `status inválido. Opciones: ${VALID_APPLICANT_STATUS.join(", ")}` });
+    }
+
+    const vacancy = await Vacancy.findOne({ _id: req.params.id, publishedBy: req.user.uid });
+    if (!vacancy) return res.status(404).json({ message: "Vacante no encontrada o no autorizado" });
+
+    const applicant = vacancy.applicants.find((a) => a.userId === req.params.userId);
+    if (!applicant) return res.status(404).json({ message: "Postulante no encontrado en esta vacante" });
+
+    const updated = await Vacancy.findOneAndUpdate(
+      { _id: req.params.id, "applicants.userId": req.params.userId },
+      { $set: { "applicants.$.status": status } },
+      { returnDocument: "after" }
+    );
+
+    // Notificar al usuario via SSE
+    notifyUser(req.params.userId, {
+      type:        "application_status",
+      vacancyId:   vacancy._id.toString(),
+      vacancyTitle: vacancy.title,
+      companyName: req.user.companyName || null,
+      companyLogo: req.user.companyLogo || null,
+      status,
+    });
+
+    res.json({ message: `Estado actualizado a "${status}"`, data: updated });
+  } catch (err) {
+    if (err.name === "CastError") return res.status(400).json({ message: "ID inválido" });
+    console.error(esProduccion ? "Error PATCH /applicants/status" : `Error PATCH /applicants/status: ${err}`);
+    res.status(500).json({ message: "Error al actualizar estado del postulante" });
+  }
+});
+
+// ─── GET /api/user/notifications/stream ──────────────────────────────────────
+// SSE para el usuario — recibe notificaciones de cambios en sus postulaciones
+vacancyRouter.get("/api/user/notifications/stream", certifiedMiddleware, userSseHandler);
+
+// ─── DELETE /api/vacancy/:id ──────────────────────────────────────────────────
 vacancyRouter.delete("/api/vacancy/:id", enterpriseMiddleware, async (req, res) => {
   try {
     const deleted = await Vacancy.findOneAndDelete({
-      _id: req.params.id,
-      publishedBy: req.user.uid,   
+      _id:         req.params.id,
+      publishedBy: req.user.uid,
     });
 
     if (!deleted) return res.status(404).json({ message: "Vacante no encontrada o no autorizado" });

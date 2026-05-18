@@ -93,10 +93,18 @@ const vacancySchema = new mongoose.Schema(
     },
 
     applicants: {
-      type: [String],
+      type: [
+        {
+          userId:    { type: String, required: true },
+          status:    {
+            type:    String,
+            enum:    ["pending", "cv_read", "filter_1", "filter_2", "filter_3", "contact", "rejected"],
+            default: "pending",
+          },
+          appliedAt: { type: Date, default: Date.now },
+        }
+      ],
       default: [],
-      comment:
-        "Array de userIds (string) de perfiles básicos registrados que aplicaron a esta vacante",
     },
 
     status: {
@@ -113,18 +121,20 @@ const vacancySchema = new mongoose.Schema(
       required: [true, "El ID de la empresa publicadora es obligatorio"],
     },
 
-    closesAt: {
-      type: Date,
-      default: null,
-    },
     companyName: {
       type: String,
       trim: true,
       default: null,
     },
+
     companyLogo: {
       type: String,
       trim: true,
+      default: null,
+    },
+
+    closesAt: {
+      type: Date,
       default: null,
     },
   },
