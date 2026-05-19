@@ -12,6 +12,7 @@ const paymentsRouter = require("./routes/paymentRoutes")
 const firebaseRouter = require("./routes/firebaseRouter")
 const cartRouter = require("./routes/cartRouter")
 const vacancyRouter = require("./routes/vacancyRouter")
+const cvRouter = require("./routes/cvRouter")
 const adminMiddleware = require("./middleware/adminMiddleware")
 const enterpriseMiddleware = require("./middleware/enterpriseMiddleware")
 const certifiedMiddleware = require("./middleware/certificatedMiddleware")
@@ -39,6 +40,7 @@ app.get("/api/payments/stream", adminMiddleware, sseHandler);
 app.get("/api/vacancy/applicants/stream", enterpriseMiddleware, applicantSseHandler);
 app.get("/api/user/notifications/stream", certifiedMiddleware, userSseHandler);
 
+app.use(cvRouter)
 app.use(authRouter)
 app.use(mailRouter)
 app.use(mercadoPagoRouter)

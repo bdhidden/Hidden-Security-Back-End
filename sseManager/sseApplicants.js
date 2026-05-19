@@ -1,13 +1,14 @@
 const applicantSseClients = new Set();
 
 // ─── Notificar nueva postulación ──────────────────────────────────────────────
-const notifyNewApplicant = (vacancyId, vacancyTitle, userId) => {
+const notifyNewApplicant = (vacancyId, vacancyTitle, userId, applicantName = "") => {
     if (applicantSseClients.size === 0) return;
 
     const data = JSON.stringify({
         vacancyId,
         vacancyTitle,
         userId,
+        applicantName,
         createdAt: new Date().toISOString(),
     });
 

@@ -6,6 +6,8 @@ const enterpriseMiddleware  = require("../middleware/enterpriseMiddleware");
 const certifiedMiddleware   = require("../middleware/certificatedMiddleware");
 const { notifyNewApplicant, applicantSseHandler } = require("../sseManager/sseApplicants");
 const { notifyUser, userSseHandler } = require("../sseManager/sseUserNotifications");
+const { CV } = require("../models/cvModel");
+
 const esProduccion = process.env.NODE_ENV === "production";
 
 const VALID_EXPERIENCE = ["Junior", "Semi-Senior", "Senior", "Lead", "Manager"];
@@ -150,7 +152,7 @@ vacancyRouter.get("/api/public/vacancies", async (req, res) => {
     const parsedLimit = parseInt(limit);
 
     if (isNaN(parsedPage)  || parsedPage  < 1) return res.status(400).json({ message: "page debe ser un entero positivo" });
-    if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit> 100)  return res.status(400).json({ message: "limit debe ser entre 1 y 50" });
+    if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 100)  return res.status(400).json({ message: "limit debe ser entre 1 y 50" });
 
     const filter = { status: "active" };
 
@@ -411,8 +413,19 @@ vacancyRouter.get("/api/user/applications", certifiedMiddleware, async (req, res
 // ─── PATCH /api/vacancy/:id/applicants ───────────────────────────────────────
 vacancyRouter.patch("/api/vacancy/:id/applicants", certifiedMiddleware, async (req, res) => {
   try {
-    // userId viene del token, no del body — más seguro
-    const userId = req.user.uid;
+    const userId  = req.user.uid;
+    const { consent } = req.body;
+
+    // Verificar consentimiento explícito
+    if (!consent) {
+      return res.status(400).json({ message: "Se requiere consentimiento para compartir datos personales" });
+    }
+
+    // Verificar que el usuario tiene CV creado
+    const cv = await CV.findOne({ userId }).lean();
+    if (!cv) {
+      return res.status(400).json({ message: "CV_REQUIRED", detail: "Debés crear tu CV antes de postularte" });
+    }
 
     const vacancy = await Vacancy.findById(req.params.id);
     if (!vacancy) return res.status(404).json({ message: "Vacante no encontrada" });
@@ -420,7 +433,7 @@ vacancyRouter.patch("/api/vacancy/:id/applicants", certifiedMiddleware, async (r
       return res.status(400).json({ message: "No se puede aplicar a una vacante que no está activa" });
     }
 
-    // Verificar duplicado con el nuevo modelo de objetos
+    // Verificar duplicado
     const yaAplico = vacancy.applicants.some((a) => a.userId === userId.trim());
     if (yaAplico) {
       return res.status(409).json({ message: "El usuario ya aplicó a esta vacante" });
@@ -432,7 +445,9 @@ vacancyRouter.patch("/api/vacancy/:id/applicants", certifiedMiddleware, async (r
       { returnDocument: "after" }
     );
 
-    notifyNewApplicant(vacancy._id.toString(), vacancy.title, userId.trim());
+    // Notificar con nombre completo del postulante
+    const applicantName = [cv.personalInfo?.firstName, cv.personalInfo?.lastName].filter(Boolean).join(" ") || userId;
+    notifyNewApplicant(vacancy._id.toString(), vacancy.title, userId.trim(), applicantName);
 
     res.json({ message: "Aplicante registrado", applicantsCount: updated.applicants.length });
   } catch (err) {
