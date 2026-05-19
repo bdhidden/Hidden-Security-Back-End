@@ -4,10 +4,9 @@ const vacancyRouter  = express.Router();
 const { Vacancy, IT_SKILLS } = require("../models/vacancyModel");
 const enterpriseMiddleware  = require("../middleware/enterpriseMiddleware");
 const certifiedMiddleware   = require("../middleware/certificatedMiddleware");
-const { notifyNewApplicant, applicantSseHandler } = require("../sseManager/sseApplicants");
+const { notifyNewApplicant/* , applicantSseHandler  */} = require("../sseManager/sseApplicants");
 const { notifyUser, userSseHandler } = require("../sseManager/sseUserNotifications");
 const { CV } = require("../models/cvModel");
-
 const esProduccion = process.env.NODE_ENV === "production";
 
 const VALID_EXPERIENCE = ["Junior", "Semi-Senior", "Senior", "Lead", "Manager"];
@@ -441,11 +440,22 @@ vacancyRouter.patch("/api/vacancy/:id/applicants", certifiedMiddleware, async (r
 
     const updated = await Vacancy.findByIdAndUpdate(
       req.params.id,
-      { $push: { applicants: { userId: userId.trim(), status: "pending", appliedAt: new Date() } } },
+      {
+        $push: {
+          applicants: {
+            userId:         userId.trim(),
+            applicantName:  [cv.personalInfo?.firstName, cv.personalInfo?.lastName].filter(Boolean).join(" ") || "",
+            applicantEmail: cv.personalInfo?.email || "",
+            applicantPhone: cv.personalInfo?.phone || "",
+            status:         "pending",
+            appliedAt:      new Date(),
+          }
+        }
+      },
       { returnDocument: "after" }
     );
 
-    // Notificar con nombre completo del postulante
+    // SSE solo notifica — los datos ya están en la DB
     const applicantName = [cv.personalInfo?.firstName, cv.personalInfo?.lastName].filter(Boolean).join(" ") || userId;
     notifyNewApplicant(vacancy._id.toString(), vacancy.title, userId.trim(), applicantName);
 
@@ -496,6 +506,29 @@ vacancyRouter.patch("/api/vacancy/:id/applicants/:userId/status", enterpriseMidd
     if (err.name === "CastError") return res.status(400).json({ message: "ID inválido" });
     console.error(esProduccion ? "Error PATCH /applicants/status" : `Error PATCH /applicants/status: ${err}`);
     res.status(500).json({ message: "Error al actualizar estado del postulante" });
+  }
+});
+
+// ─── DELETE /api/vacancy/:id/applicants/:userId ───────────────────────────────
+// La empresa elimina un postulante de una vacante (ej: rechazados)
+vacancyRouter.delete("/api/vacancy/:id/applicants/:userId", enterpriseMiddleware, async (req, res) => {
+  try {
+    const vacancy = await Vacancy.findOne({ _id: req.params.id, publishedBy: req.user.uid });
+    if (!vacancy) return res.status(404).json({ message: "Vacante no encontrada o no autorizado" });
+
+    const exists = vacancy.applicants.some((a) => a.userId === req.params.userId);
+    if (!exists) return res.status(404).json({ message: "Postulante no encontrado" });
+
+    await Vacancy.findByIdAndUpdate(
+      req.params.id,
+      { $pull: { applicants: { userId: req.params.userId } } }
+    );
+
+    res.json({ message: "Postulante eliminado correctamente" });
+  } catch (err) {
+    if (err.name === "CastError") return res.status(400).json({ message: "ID inválido" });
+    console.error(esProduccion ? "Error DELETE /applicants/:userId" : `Error DELETE /applicants/:userId: ${err}`);
+    res.status(500).json({ message: "Error al eliminar postulante" });
   }
 });
 

@@ -95,7 +95,10 @@ const vacancySchema = new mongoose.Schema(
     applicants: {
       type: [
         {
-          userId:    { type: String, required: true },
+          userId:         { type: String, required: true },
+          applicantName:  { type: String, trim: true, default: "" },
+          applicantEmail: { type: String, trim: true, default: "" },
+          applicantPhone: { type: String, trim: true, default: "" },
           status:    {
             type:    String,
             enum:    ["pending", "cv_read", "filter_1", "filter_2", "filter_3", "contact", "rejected"],
