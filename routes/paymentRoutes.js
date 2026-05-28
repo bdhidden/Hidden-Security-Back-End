@@ -48,9 +48,17 @@ paymentsRouter.get("/all-tickets", adminMiddleware, async (req, res) => {
 });
 
 // TEST REAL PAYMENT
+const PLAN_DURATIONS = {
+    starter:  3,
+    pro:      6,
+    elite:    12,
+    b2b_seis: 6,
+    b2b_doce: 12,
+    // voucher: undefined — intencional, no tiene expiración por tiempo
+};
+
 const VALID_PLANS = ['starter', 'pro', 'elite', 'voucher', 'b2b_seis', 'b2b_doce'];
 
-// ── FUENTE DE VERDAD DE PRECIOS (solo en el servidor) ────────────────────────
 const PLAN_PRICES = {
     starter:  80000,
     pro:      250000,
@@ -60,19 +68,25 @@ const PLAN_PRICES = {
     b2b_doce: 700000,
 };
 
-// Planes que incluyen vouchers automáticos al comprarse
 const BUNDLED_VOUCHERS = {
-    'elite': 2,  // elite incluye 2 vouchers (re-intento)
-    'pro':   1,  // pro incluye 1 voucher
+    'elite': 2,
+    'pro':   1,
 };
 
+// ── Helper: calcular fecha de expiración ─────────────────────────────────────
+function calcExpiresAt(planId) {
+    const months = PLAN_DURATIONS[planId];
+    if (!months) return null; // voucher → null
+    const d = new Date();
+    d.setMonth(d.getMonth() + months);
+    return d;
+}
+
 paymentsRouter.post("/test-course-payment", verifyToken, async (req, res) => {
-    // transaction_amount ya NO viene del front — se calcula acá
     const { payer, idempotencyKey, items, couponCode } = req.body;
 
-    console.log("🧪 [CURSO_SIMULACIÓN] Iniciando proceso de prueba...");
+    console.log("🧪 [CURSO_SIMULACIÓN] Iniciando proceso...");
 
-    // ── validaciones básicas ──────────────────────────────────────────────────
     if (!payer?.email || !items || !Array.isArray(items) || items.length === 0) {
         return res.status(400).json({ message: "Faltan datos: payer.email e items son requeridos 🔴" });
     }
@@ -83,24 +97,20 @@ paymentsRouter.post("/test-course-payment", verifyToken, async (req, res) => {
     }
 
     const sanitizedEmail = payer.email.trim().toLowerCase();
-    const sanitizedPhone = payer.phone ? payer.phone.trim() : null;  // ✅ teléfono
+    const sanitizedPhone = payer.phone ? payer.phone.trim() : null;
     const uid            = req.user.uid;
 
     try {
-
-        // ── 1. EXPANDIR ITEMS CON VOUCHERS INCLUIDOS EN EL PLAN ──────────────
+        // ── 1. EXPANDIR ITEMS CON VOUCHERS BUNDLED ────────────────────────────
         const expandedItems = [];
         for (const item of items) {
             expandedItems.push(item);
             if (BUNDLED_VOUCHERS[item]) {
                 const count = BUNDLED_VOUCHERS[item];
-                for (let i = 0; i < count; i++) {
-                    expandedItems.push('voucher');
-                }
+                for (let i = 0; i < count; i++) expandedItems.push('voucher');
                 console.log(`✅ Plan ${item.toUpperCase()} incluye ${count} voucher(s) automático(s).`);
             }
         }
-
         console.log("📦 Items expandidos:", expandedItems);
 
         // ── 2. VALIDAR Y CONSUMIR CUPÓN ───────────────────────────────────────
@@ -110,18 +120,16 @@ paymentsRouter.post("/test-course-payment", verifyToken, async (req, res) => {
             const sanitizedCode = couponCode.trim().toUpperCase();
             const coupon = await Coupon.findOne({ code: sanitizedCode, isActive: true });
 
-            if (!coupon) {
+            if (!coupon)
                 return res.status(404).json({ message: "Cupón no encontrado o inactivo 🔴" });
-            }
 
             if (coupon.type === 'date_limited' && coupon.expiryDate < new Date()) {
                 await Coupon.findByIdAndUpdate(coupon._id, { isActive: false });
                 return res.status(400).json({ message: "El cupón expiró ⚠️" });
             }
 
-            if (coupon.type === 'single_use' && coupon.usedBy.includes(sanitizedEmail)) {
+            if (coupon.type === 'single_use' && coupon.usedBy.includes(sanitizedEmail))
                 return res.status(400).json({ message: "Ya usaste este cupón 🔴" });
-            }
 
             if (coupon.type === 'limited_uses') {
                 if (coupon.maxUses !== null && coupon.usesCount >= coupon.maxUses) {
@@ -132,11 +140,8 @@ paymentsRouter.post("/test-course-payment", verifyToken, async (req, res) => {
 
             if (coupon.scope === 'plans') {
                 const applies = items.some(planId => coupon.allowedPlans.includes(planId));
-                if (!applies) {
-                    return res.status(400).json({
-                        message: `Este cupón no aplica a ninguno de los planes seleccionados 🔴`
-                    });
-                }
+                if (!applies)
+                    return res.status(400).json({ message: "Este cupón no aplica a ninguno de los planes seleccionados 🔴" });
             }
 
             appliedDiscount = coupon.discount;
@@ -144,8 +149,7 @@ paymentsRouter.post("/test-course-payment", verifyToken, async (req, res) => {
 
             if (coupon.type === 'single_use') {
                 await Coupon.findByIdAndUpdate(coupon._id, {
-                    $addToSet: { usedBy: sanitizedEmail },
-                    isActive: false
+                    $addToSet: { usedBy: sanitizedEmail }, isActive: false
                 });
             } else if (coupon.type === 'limited_uses') {
                 const updated = await Coupon.findByIdAndUpdate(
@@ -153,46 +157,40 @@ paymentsRouter.post("/test-course-payment", verifyToken, async (req, res) => {
                     { $addToSet: { usedBy: sanitizedEmail }, $inc: { usesCount: 1 } },
                     { new: true }
                 );
-                if (updated.maxUses !== null && updated.usesCount >= updated.maxUses) {
+                if (updated.maxUses !== null && updated.usesCount >= updated.maxUses)
                     await Coupon.findByIdAndUpdate(coupon._id, { isActive: false });
-                    console.log(`⚠️ Cupón ${sanitizedCode} desactivado por límite de usos alcanzado.`);
-                }
             } else if (coupon.type === 'date_limited') {
-                await Coupon.findByIdAndUpdate(coupon._id, {
-                    $addToSet: { usedBy: sanitizedEmail }
-                });
+                await Coupon.findByIdAndUpdate(coupon._id, { $addToSet: { usedBy: sanitizedEmail } });
             }
 
-            console.log(`✅ Cupón ${sanitizedCode} consumido correctamente.`);
+            console.log(`✅ Cupón ${couponCode.toUpperCase()} consumido.`);
         }
 
-        // ── 3. CALCULAR MONTO EN EL SERVIDOR ─────────────────────────────────
-        // Se calcula sobre los items originales (no los bundled)
+        // ── 3. CALCULAR MONTO ─────────────────────────────────────────────────
         const baseAmount  = items.reduce((acc, planId) => acc + (PLAN_PRICES[planId] || 0), 0);
         const finalAmount = appliedDiscount > 0
             ? Math.round(baseAmount * (1 - appliedDiscount / 100))
             : baseAmount;
 
-        console.log(`💰 Monto calculado → base: $${baseAmount} | descuento: ${appliedDiscount}% | final: $${finalAmount}`);
+        console.log(`💰 base: $${baseAmount} | descuento: ${appliedDiscount}% | final: $${finalAmount}`);
 
-        // ── 4. SIMULAR RESPUESTA DE MERCADO PAGO ─────────────────────────────
+        // ── 4. SIMULAR MP ─────────────────────────────────────────────────────
         const fakeMPResult = {
             id:            "fake-course-" + Math.floor(Math.random() * 1000000),
             status:        "approved",
             status_detail: "accredited"
         };
 
-        console.log("🧪 [SIMULACIÓN] MP respondió:", fakeMPResult.status);
-
         if (fakeMPResult.status !== "approved") {
-            return res.status(402).json({ message: "Pago rechazado en simulación", status: fakeMPResult.status });
+            return res.status(402).json({ message: "Pago rechazado", status: fakeMPResult.status });
         }
 
-        // ── 5. SETEAR FIREBASE CUSTOM CLAIMS ─────────────────────────────────
+        // ── 5. FIREBASE CUSTOM CLAIMS ─────────────────────────────────────────
         const userRecord    = await auth.getUser(uid);
         const currentClaims = userRecord.customClaims || {};
         const existingItems = Array.isArray(currentClaims.purchases) ? currentClaims.purchases : [];
 
+        // purchases[] — sin duplicados para planes, acumulativo para vouchers
         const nonVoucherExisting = existingItems.filter(i => i !== 'voucher');
         const nonVoucherNew      = expandedItems.filter(i => i !== 'voucher');
         const voucherCount       = existingItems.filter(i => i === 'voucher').length
@@ -203,40 +201,64 @@ paymentsRouter.post("/test-course-payment", verifyToken, async (req, res) => {
             ...Array(voucherCount).fill('voucher')
         ];
 
+        // ── NUEVO: purchaseExpiry — fecha de vencimiento por plan ─────────────
+        // voucher no entra acá (no vence por tiempo)
+        const existingExpiry = currentClaims.purchaseExpiry || {};
+        const newExpiry      = { ...existingExpiry };
+
+        for (const planId of items) {
+            if (planId === 'voucher') continue; // voucher: skip
+
+            const expiresAt = calcExpiresAt(planId);
+            if (!expiresAt) continue;
+
+            // Si ya tiene el plan vigente: renovar desde HOY (no acumular)
+            newExpiry[planId] = expiresAt.toISOString();
+            console.log(`📅 ${planId.toUpperCase()} expira: ${expiresAt.toISOString()}`);
+        }
+
         await auth.setCustomUserClaims(uid, {
             ...currentClaims,
-            purchases: updatedPurchases
+            purchases:      updatedPurchases,
+            purchaseExpiry: newExpiry,          // ← NUEVO
         });
 
         console.log(`✅ Firebase claims seteadas para ${uid}:`, updatedPurchases);
+        console.log(`✅ Expiry claims:`, newExpiry);
 
-        // ── 6. GUARDAR PAGO EN DB ─────────────────────────────────────────────
+        // ── 6. GUARDAR EN DB ──────────────────────────────────────────────────
+        // Calcular expiresAt del plan principal (primer item no-voucher)
+        const mainPlan    = items.find(i => i !== 'voucher') || items[0];
+        const dbExpiresAt = calcExpiresAt(mainPlan); // null si es voucher puro
+
         const nuevoPago = new PaymentsMongo({
             orderId:       idempotencyKey || `TEST-COURSE-${Date.now()}`,
             client_id:     uid,
             email:         sanitizedEmail,
-            phone:         sanitizedPhone,               // ✅ teléfono guardado
+            telefono:      sanitizedPhone,
             plan:          items.join('+'),
-            amount:        finalAmount,                  // ✅ calculado en backend
+            amount:        finalAmount,
             mp_payment_id: fakeMPResult.id,
             status:        fakeMPResult.status,
             couponUsed:    couponCode ? couponCode.toUpperCase() : null,
             discount:      appliedDiscount,
-            date:          new Date()
+            date:          new Date(),
+            expiresAt:     dbExpiresAt,       // ← NUEVO: null si es voucher puro
         });
 
         await nuevoPago.save();
         notifyNewSale(nuevoPago);
-        console.log("✅ Pago guardado en DB.");
+        console.log("✅ Pago guardado en DB.", dbExpiresAt ? `Vence: ${dbExpiresAt.toLocaleDateString()}` : "Sin vencimiento (voucher).");
 
-        // ── 7. RESPUESTA 
+        // ── 7. RESPUESTA ──────────────────────────────────────────────────────
         return res.status(200).json({
-            message:   "Simulación de curso completada con éxito 🟢",
-            mp_status: fakeMPResult.status,
-            mp_id:     fakeMPResult.id,
-            purchases: updatedPurchases,
-            discount:  appliedDiscount > 0 ? `${appliedDiscount}%` : null,
-            amount:    finalAmount,                     
+            message:        "Simulación de curso completada con éxito 🟢",
+            mp_status:      fakeMPResult.status,
+            mp_id:          fakeMPResult.id,
+            purchases:      updatedPurchases,
+            purchaseExpiry: newExpiry,
+            discount:       appliedDiscount > 0 ? `${appliedDiscount}%` : null,
+            amount:         finalAmount,
         });
 
     } catch (error) {
@@ -245,9 +267,72 @@ paymentsRouter.post("/test-course-payment", verifyToken, async (req, res) => {
     }
 });
 
+// Refresh-Claims
+paymentsRouter.get("/api/refresh-claims", verifyToken, async (req, res) => {
+    const uid = req.user.uid;
+
+    try {
+        const userRecord    = await auth.getUser(uid);
+        const currentClaims = userRecord.customClaims || {};
+
+        const purchases      = Array.isArray(currentClaims.purchases) ? currentClaims.purchases : [];
+        const purchaseExpiry = currentClaims.purchaseExpiry || {};
+
+        const now      = new Date();
+        let   modified = false;
+
+        const expiredPlans = [];
+
+        // Chequear cada plan con fecha de expiración
+        for (const [planId, expiresAtStr] of Object.entries(purchaseExpiry)) {
+            const expiresAt = new Date(expiresAtStr);
+            if (expiresAt < now) {
+                expiredPlans.push(planId);
+                modified = true;
+                console.log(`🗑️  Plan ${planId.toUpperCase()} vencido el ${expiresAt.toLocaleDateString()} — removiendo claims de ${uid}`);
+            }
+        }
+
+        if (!modified) {
+            // Nada vencido — devolver claims actuales sin tocar Firebase
+            return res.json({
+                ok:             true,
+                modified:       false,
+                purchases,
+                purchaseExpiry,
+            });
+        }
+
+        // Limpiar planes vencidos
+        const updatedPurchases = purchases.filter(p => !expiredPlans.includes(p));
+        const updatedExpiry    = { ...purchaseExpiry };
+        for (const planId of expiredPlans) delete updatedExpiry[planId];
+
+        await auth.setCustomUserClaims(uid, {
+            ...currentClaims,
+            purchases:      updatedPurchases,
+            purchaseExpiry: updatedExpiry,
+        });
+
+        console.log(`✅ Claims actualizadas para ${uid}. Planes removidos: ${expiredPlans.join(', ')}`);
+
+        return res.json({
+            ok:             true,
+            modified:       true,
+            expiredPlans,
+            purchases:      updatedPurchases,
+            purchaseExpiry: updatedExpiry,
+        });
+
+    } catch (error) {
+        console.error("❌ [refresh-claims ERROR]:", error.message);
+        return res.status(500).json({ error: "Error al refrescar claims", details: error.message });
+    }
+});
+
 paymentsRouter.patch("/api/payments/:id/checked", adminMiddleware, async (req, res) => {
     await PaymentsMongo.findByIdAndUpdate(req.params.id, { checked: req.body.checked });
     res.json({ ok: true });
 });
 
-module.exports = paymentsRouter
+module.exports = paymentsRouter;
