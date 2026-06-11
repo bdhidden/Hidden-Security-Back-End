@@ -50,3 +50,4 @@ makeAdmin.js
 makeEnterprise.js
 clearPurchased.js
 makeCertificated.js
+clearAllCustomClaims.js

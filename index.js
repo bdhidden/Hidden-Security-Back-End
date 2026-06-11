@@ -19,6 +19,7 @@ const certifiedMiddleware = require("./middleware/certificatedMiddleware")
 const { sseHandler } = require("./sseManager/sseManajer")
 const { applicantSseHandler } = require("./sseManager/sseApplicants")
 const { userSseHandler } = require("./sseManager/sseUserNotifications");
+const courseRouter = require("./routes/courseRouter")
 const app = express()
 const PORT = process.env.PORT
 
@@ -49,6 +50,7 @@ app.use(paymentsRouter)
 app.use(firebaseRouter)
 app.use(cartRouter)
 app.use(vacancyRouter)
+app.use(courseRouter)
 
 app.use((req, res) => {
     res.send(`<h1>404 - Not Found</h1>`)

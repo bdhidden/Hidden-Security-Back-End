@@ -4,9 +4,9 @@ const vacancyRouter  = express.Router();
 const { Vacancy, IT_SKILLS } = require("../models/vacancyModel");
 const enterpriseMiddleware  = require("../middleware/enterpriseMiddleware");
 const certifiedMiddleware   = require("../middleware/certificatedMiddleware");
-const { notifyNewApplicant/* , applicantSseHandler  */} = require("../sseManager/sseApplicants");
-const { notifyUser, userSseHandler } = require("../sseManager/sseUserNotifications");
-const { CV } = require("../models/cvModel");
+const { notifyNewApplicant } = require("../sseManager/sseApplicants");
+const { notifyUser, userSseHandler }              = require("../sseManager/sseUserNotifications");
+const { CV }                                      = require("../models/cvModel");
 const esProduccion = process.env.NODE_ENV === "production";
 
 const VALID_EXPERIENCE = ["Junior", "Semi-Senior", "Senior", "Lead", "Manager"];
@@ -151,7 +151,7 @@ vacancyRouter.get("/api/public/vacancies", async (req, res) => {
     const parsedLimit = parseInt(limit);
 
     if (isNaN(parsedPage)  || parsedPage  < 1) return res.status(400).json({ message: "page debe ser un entero positivo" });
-    if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 100)  return res.status(400).json({ message: "limit debe ser entre 1 y 50" });
+    if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 50)  return res.status(400).json({ message: "limit debe ser entre 1 y 50" });
 
     const filter = { status: "active" };
 
@@ -270,6 +270,42 @@ vacancyRouter.get("/api/vacancy/:id", enterpriseMiddleware, async (req, res) => 
 // ─── POST /api/vacancy ────────────────────────────────────────────────────────
 vacancyRouter.post("/api/vacancy", enterpriseMiddleware, async (req, res) => {
   try {
+    // ── Validar plan B2B activo ────────────────────────────────────────────
+    const claims     = req.user;
+    const plan       = claims.enterprisePlan       ?? null;
+    const expiryStr  = claims.enterprisePlanExpiry ?? null;
+    const limit      = claims.vacancyLimit         ?? null;   // null = ilimitado
+    const used       = claims.vacanciesUsed        ?? 0;
+
+    // Sin plan activo
+    if (!plan || !expiryStr) {
+      return res.status(403).json({
+        message: "SIN_PLAN_B2B_ACTIVO",
+        detail:  "Necesitás un plan B2B activo para publicar vacantes.",
+        code:    "NO_ACTIVE_B2B_PLAN",
+      });
+    }
+
+    // Plan vencido
+    if (new Date(expiryStr) <= new Date()) {
+      return res.status(403).json({
+        message: "PLAN_B2B_VENCIDO",
+        detail:  "Tu plan B2B venció. Renovalo para seguir publicando vacantes.",
+        code:    "B2B_PLAN_EXPIRED",
+      });
+    }
+
+    // Límite de publicaciones alcanzado (solo b2b_seis, b2b_doce es null = ilimitado)
+    if (limit !== null && used >= limit) {
+      return res.status(403).json({
+        message: `LÍMITE_DE_PUBLICACIONES_ALCANZADO`,
+        detail:  `Tu plan ${plan.toUpperCase()} permite hasta ${limit} publicaciones. Ya usaste las ${used}.`,
+        code:    "VACANCY_LIMIT_REACHED",
+        limit,
+        used,
+      });
+    }
+
     const { valid, errors } = validateVacancyBody(req.body, false);
     if (!valid) return res.status(400).json({ message: "Error de validación", errors });
 
@@ -296,6 +332,18 @@ vacancyRouter.post("/api/vacancy", enterpriseMiddleware, async (req, res) => {
     });
 
     const saved = await vacancy.save();
+
+    // ── Incrementar vacanciesUsed en Firebase si hay límite ───────────────
+    if (limit !== null) {
+      const auth         = require("../config/firebase");
+      const userRecord   = await auth.getUser(req.user.uid);
+      const currentClaims = userRecord.customClaims || {};
+      await auth.setCustomUserClaims(req.user.uid, {
+        ...currentClaims,
+        vacanciesUsed: (currentClaims.vacanciesUsed ?? 0) + 1,
+      });
+    }
+
     res.status(201).json({ message: "Vacante creada exitosamente", data: saved });
   } catch (err) {
     if (err.name === "ValidationError") {
@@ -545,6 +593,26 @@ vacancyRouter.delete("/api/vacancy/:id", enterpriseMiddleware, async (req, res) 
     });
 
     if (!deleted) return res.status(404).json({ message: "Vacante no encontrada o no autorizado" });
+
+    // ── Recuperar cupo si el plan tiene límite (b2b_seis) ─────────────────
+    const limit = req.user.vacancyLimit ?? null;
+    if (limit !== null) {
+      try {
+        const auth         = require("../config/firebase");
+        const userRecord   = await auth.getUser(req.user.uid);
+        const currentClaims = userRecord.customClaims || {};
+        const currentUsed  = currentClaims.vacanciesUsed ?? 0;
+        await auth.setCustomUserClaims(req.user.uid, {
+          ...currentClaims,
+          vacanciesUsed: Math.max(0, currentUsed - 1),
+        });
+        console.log(`♻️  Cupo recuperado para ${req.user.uid}. Used: ${currentUsed} → ${Math.max(0, currentUsed - 1)}`);
+      } catch (claimErr) {
+        // No bloquear la respuesta si falla el update de claims
+        console.error("Error actualizando vacanciesUsed:", claimErr.message);
+      }
+    }
+
     res.json({ message: "Vacante eliminada correctamente" });
   } catch (err) {
     if (err.name === "CastError") return res.status(400).json({ message: "ID inválido" });

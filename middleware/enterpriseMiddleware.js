@@ -5,7 +5,7 @@ const enterpriseMiddleware = async (req, res, next) => {
     const token = req.cookies.idToken; 
 
     if (!token) {
-        return res.status(401).json({ message: "No enterprisecredentials! 🔴" });
+        return res.status(401).json({ message: "No Enterprise Credentials! 🔴" });
     }
     try {
         const decodedClaims = await auth.verifyIdToken(token);
