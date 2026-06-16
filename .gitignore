@@ -51,3 +51,4 @@ makeEnterprise.js
 clearPurchased.js
 makeCertificated.js
 clearAllCustomClaims.js
+certifySkills.js
