@@ -236,6 +236,16 @@ authRouter.post("/login", loginLimiter, async (req, res) => {
         });
 
         // 6. Configurar Cookie
+
+        /* res.cookie("idToken", idToken, {
+            httpOnly: true,
+            sameSite: "lax",
+            secure: true,
+            domain: ".hidden-security.org",
+            maxAge: 60 * 60 * 1000,
+            path: "/"
+        }); */
+
         res.cookie("idToken", idToken, {
             httpOnly: true,
             sameSite: "none",
@@ -355,6 +365,14 @@ authRouter.post("/logout", async (req, res) => {
                 userAgent: req.headers["user-agent"]
             });
         }
+
+        /* res.clearCookie("idToken", {
+            httpOnly: true,
+            sameSite: "lax",
+            secure: true,
+            domain: ".hidden-security.org",
+            path: "/" 
+        }); */
 
         res.clearCookie("idToken", {
             httpOnly: true,
