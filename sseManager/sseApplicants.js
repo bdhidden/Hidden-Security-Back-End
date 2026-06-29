@@ -1,8 +1,13 @@
-const applicantSseClients = new Set();
+// Mapa uid (empresa) → Set de res
+// Igual que sseUserNotifications — cada empresa solo recibe sus propias postulaciones
+const applicantSseClients = new Map();
 
-// ─── Notificar nueva postulación ──────────────────────────────────────────────
-const notifyNewApplicant = (vacancyId, vacancyTitle, userId, applicantName = "") => {
-    if (applicantSseClients.size === 0) return;
+// ─── Notificar nueva postulación a la empresa dueña de la vacante ─────────────
+const notifyNewApplicant = (vacancyId, vacancyTitle, userId, applicantName = "", companyUid) => {
+    if (!companyUid) return;
+
+    const clients = applicantSseClients.get(companyUid);
+    if (!clients || clients.size === 0) return;
 
     const data = JSON.stringify({
         vacancyId,
@@ -12,17 +17,19 @@ const notifyNewApplicant = (vacancyId, vacancyTitle, userId, applicantName = "")
         createdAt: new Date().toISOString(),
     });
 
-    /* console.log(`📢 SSE applicant notify — clientes: ${applicantSseClients.size} — vacancy: ${vacancyTitle}`); */
-
-    applicantSseClients.forEach((client) => {
+    clients.forEach((client) => {
         try { client.write(`data: ${data}\n\n`); }
-        catch (_) { applicantSseClients.delete(client); }
+        catch (_) { clients.delete(client); }
     });
+
+    if (clients.size === 0) applicantSseClients.delete(companyUid);
 };
 
-// ─── Handler SSE para empresas ────────────────────────────────────────────────
+// ─── Handler SSE para empresas autenticadas ───────────────────────────────────
 const applicantSseHandler = (req, res) => {
-    /* console.log(`🔌 SSE applicant conectado — total: ${applicantSseClients.size + 1}`); */
+    // req.user es seteado por enterpriseMiddleware antes de llegar acá
+    const companyUid = req.user?.uid;
+    if (!companyUid) return res.status(401).end();
 
     res.setHeader("Content-Type",      "text/event-stream");
     res.setHeader("Cache-Control",     "no-cache");
@@ -30,17 +37,18 @@ const applicantSseHandler = (req, res) => {
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
 
+    if (!applicantSseClients.has(companyUid)) applicantSseClients.set(companyUid, new Set());
+    applicantSseClients.get(companyUid).add(res);
+
     const ping = setInterval(() => {
         try { res.write(": ping\n\n"); }
-        catch (_) { clearInterval(ping); applicantSseClients.delete(res); }
+        catch (_) { clearInterval(ping); applicantSseClients.get(companyUid)?.delete(res); }
     }, 25_000);
-
-    applicantSseClients.add(res);
 
     req.on("close", () => {
         clearInterval(ping);
-        applicantSseClients.delete(res);
-        /* console.log(`🔌 SSE applicant desconectado — total: ${applicantSseClients.size}`); */
+        applicantSseClients.get(companyUid)?.delete(res);
+        if (applicantSseClients.get(companyUid)?.size === 0) applicantSseClients.delete(companyUid);
     });
 };
 

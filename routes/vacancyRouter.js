@@ -7,6 +7,7 @@ const certifiedMiddleware   = require("../middleware/certificatedMiddleware");
 const { notifyNewApplicant } = require("../sseManager/sseApplicants");
 const { notifyUser, userSseHandler } = require("../sseManager/sseUserNotifications");
 const { CV }                         = require("../models/cvModel");
+// Firebase arriba con el resto de imports — no dentro de las rutas
 const auth = require("../config/firebase");
 
 const esProduccion = process.env.NODE_ENV === "production";
@@ -492,7 +493,7 @@ vacancyRouter.patch("/api/vacancy/:id/applicants", certifiedMiddleware, async (r
     );
 
     const applicantName = [cv.personalInfo?.firstName, cv.personalInfo?.lastName].filter(Boolean).join(" ") || userId;
-    notifyNewApplicant(vacancy._id.toString(), vacancy.title, userId.trim(), applicantName);
+    notifyNewApplicant(vacancy._id.toString(), vacancy.title, userId.trim(), applicantName, vacancy.publishedBy);
 
     res.json({ message: "Aplicante registrado", applicantsCount: updated.applicants.length });
   } catch (err) {

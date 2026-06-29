@@ -10,22 +10,23 @@ const notifyNewSale = (payment) => {
         checked:   payment.checked ?? false,
         createdAt: payment.createdAt,
     });
-    /* console.log(`📢 SSE notify — clientes: ${sseClients.size} — ${payment.email}`); */
     sseClients.forEach(client => {
         try { client.write(`data: ${data}\n\n`); }
         catch (_) { sseClients.delete(client); }
     });
 };
 
-const sseHandler = (req, res) => {/* 
-    console.log(`🔌 SSE conectado — total: ${sseClients.size + 1}`); */
+const sseHandler = (req, res) => {
+    // req.user es seteado por adminMiddleware antes de llegar acá
+    const uid = req.user?.uid;
+    if (!uid) return res.status(401).end();
+
     res.setHeader("Content-Type",      "text/event-stream");
     res.setHeader("Cache-Control",     "no-cache");
     res.setHeader("Connection",        "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no"); // nginx no bufferea
+    res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
 
-    // ping cada 25s para mantener viva la conexión
     const ping = setInterval(() => {
         try { res.write(": ping\n\n"); }
         catch (_) { clearInterval(ping); sseClients.delete(res); }
@@ -36,7 +37,6 @@ const sseHandler = (req, res) => {/*
     req.on("close", () => {
         clearInterval(ping);
         sseClients.delete(res);
-        console.log(`🔌 SSE desconectado — total: ${sseClients.size}`);
     });
 };
 
