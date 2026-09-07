@@ -4,9 +4,12 @@ const { BrevoClient } = require("@getbrevo/brevo");
 
 const esProduccion = process.env.NODE_ENV === "production";
 
-// ── BREVO CLIENT ──────────────────────────────────────────────
-// Mismo cliente que en mailRouter.js. Se declara acá también porque este
+// -- BREVO CLIENT --------------------------------------------------
+// Mismo cliente que en mailRouter.js. Se declara aca tambien porque este
 // archivo se mantiene self-contained (no importa nada de mailRouter.js).
+console.log("[corporativeMailingRouter] BREVO_API_KEY presente:", !!process.env.BREVO_API_KEY);
+console.log("[corporativeMailingRouter] EMAIL_FROM:", process.env.EMAIL_FROM);
+
 const brevo = new BrevoClient({ apiKey: process.env.BREVO_API_KEY });
 
 async function sendMail({ to, subject, html, attachments = [] }) {
@@ -24,10 +27,30 @@ async function sendMail({ to, subject, html, attachments = [] }) {
         }));
     }
 
-    await brevo.transactionalEmails.sendTransacEmail(payload);
+    console.log("[sendMail] payload a enviar (sin htmlContent):", {
+        sender: payload.sender,
+        to: payload.to,
+        subject: payload.subject,
+        attachmentsCount: payload.attachment?.length ?? 0,
+    });
+
+    try {
+        const brevoResponse = await brevo.transactionalEmails.sendTransacEmail(payload);
+        console.log("[sendMail] respuesta cruda de Brevo:", JSON.stringify(brevoResponse, null, 2));
+        return brevoResponse;
+    } catch (brevoError) {
+        // Los errores de la API de Brevo suelen traer el detalle real en
+        // brevoError.response.body o brevoError.body, no en brevoError.message
+        console.error("[sendMail] ERROR crudo de Brevo:", brevoError);
+        console.error("[sendMail] brevoError.message:", brevoError?.message);
+        console.error("[sendMail] brevoError.response?.body:", brevoError?.response?.body);
+        console.error("[sendMail] brevoError.body:", brevoError?.body);
+        console.error("[sendMail] brevoError.response?.status:", brevoError?.response?.status);
+        throw brevoError;
+    }
 }
 
-// ── BLOQUES HTML COMPARTIDOS ──────────────────────────────────
+// -- BLOQUES HTML COMPARTIDOS ----------------------------------------
 // Copia exacta de los bloques de mailRouter.js, para mantener el mismo
 // diseño visual (header amarillo/negro, firma, divisor) en todos los
 // mailings del sistema.
@@ -100,32 +123,38 @@ const divisor = `
         <tr><td style="border-top:1px solid rgba(204,255,0,0.15);"></td></tr>
     </table>`;
 
-// ── Copy del tipo de solicitud — mismo mapeo que REQUEST_TYPE_COPY en Pricing.tsx
+// -- Copy del tipo de solicitud -- mismo mapeo que REQUEST_TYPE_COPY en Pricing.tsx
 const REQUEST_TYPE_LABELS = {
     empresa: "EMPRESA",
     trainee: "TRAINEE / SPONSOR",
 };
 
-// ── POST /request ───────────────────────────────────────────────
+// -- POST /request ------------------------------------------------
 // Recibe el formulario de solicitud de acceso (Empresa / Trainee-Sponsor)
 // desde Pricing.tsx y te lo reenvía a vos (EMAIL_FROM) con el mismo diseño
 // visual que el resto de los mailings del sistema.
-corporativeMailingRouter.post("/request", async (req, res) => {
+corporativeMailingRouter.post("/corporate-mailing/request", async (req, res) => {
+    console.log("[POST /request] body recibido:", req.body);
+
     const { requestType, email, fullName, company, country } = req.body;
 
     if (!requestType || !email || !fullName || !company || !country) {
+        console.log("[POST /request] faltan campos:", { requestType, email, fullName, company, country });
         return res.status(400).json({ message: "All required fields must be filled! 🔴" });
     }
 
     if (!["empresa", "trainee"].includes(requestType)) {
+        console.log("[POST /request] requestType inválido:", requestType);
         return res.status(400).json({ message: "Invalid requestType! 🔴" });
     }
 
     const requestTypeLabel = REQUEST_TYPE_LABELS[requestType];
+    const destinatario = process.env.EMAIL_FROM;
+    console.log("[POST /request] voy a enviar a:", destinatario, "| tipo:", requestTypeLabel);
 
     try {
         await sendMail({
-            to:      process.env.EMAIL_FROM,
+            to:      destinatario,
             subject: `Nueva solicitud de acceso (${requestTypeLabel}) — ${fullName}`,
             html: `
             ${emailHead("Nueva solicitud de acceso — Hidden Security")}
@@ -197,8 +226,11 @@ corporativeMailingRouter.post("/request", async (req, res) => {
 
             ${emailFirma}`
         });
+
+        console.log("[POST /request] sendMail terminó sin lanzar excepción — revisar log de [sendMail] respuesta cruda arriba para confirmar el estado real en Brevo.");
     } catch (mailError) {
         console.error(esProduccion ? "Error sending corporative request mail 🔴" : `Error sending corporative request mail 🔴 ${mailError}`);
+        console.error("[POST /request] mailError completo:", mailError);
         return res.status(500).json({ message: "Error al enviar la solicitud 🔴", error: mailError.message });
     }
 
