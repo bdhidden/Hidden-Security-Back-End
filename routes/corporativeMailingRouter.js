@@ -133,7 +133,7 @@ const REQUEST_TYPE_LABELS = {
 // Recibe el formulario de solicitud de acceso (Empresa / Trainee-Sponsor)
 // desde Pricing.tsx y te lo reenvía a vos (EMAIL_FROM) con el mismo diseño
 // visual que el resto de los mailings del sistema.
-corporativeMailingRouter.post("/request", async (req, res) => {
+corporativeMailingRouter.post("/corporate-mailing/request", async (req, res) => {
     console.log("[POST /request] body recibido:", req.body);
 
     const { requestType, email, fullName, company, country } = req.body;
@@ -149,7 +149,7 @@ corporativeMailingRouter.post("/request", async (req, res) => {
     }
 
     const requestTypeLabel = REQUEST_TYPE_LABELS[requestType];
-    const destinatario = process.env.ADMIN_NOTIFICATION_EMAIL || process.env.EMAIL_FROM;
+    const destinatario = process.env.EMAIL_FROM;
     console.log("[POST /request] voy a enviar a:", destinatario, "| tipo:", requestTypeLabel);
 
     try {
