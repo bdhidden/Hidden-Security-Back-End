@@ -206,8 +206,9 @@ authRouter.post("/login", loginLimiter, async (req, res) => {
         // Admin y Enterprise quedan exentos de esta validación
         const isAdmin      = decoded.admin      === true;
         const isEnterprise = !!decoded.isEnterprise;
+        const isPartner = !!decoded.partner;
 
-        if (!isAdmin && !isEnterprise) {
+        if (!isAdmin && !isEnterprise && !isPartner) {
             const userRecord = await auth.getUser(uid);
             if (!userRecord.emailVerified) {
                 return res.status(403).json({
@@ -256,6 +257,7 @@ authRouter.post("/login", loginLimiter, async (req, res) => {
             // Roles
             admin:                 decoded.admin                 === true,
             isEnterprise:          !!decoded.isEnterprise,
+            partner:                !!decoded.partner,
             userCertificated:      !!decoded.userCertificated,
             // Planes usuario normal
             purchases:             Array.isArray(decoded.purchases) ? decoded.purchases : [],
@@ -274,6 +276,7 @@ authRouter.post("/login", loginLimiter, async (req, res) => {
             user:        userPayload,
             isAdmin:     userPayload.admin,
             isEnterprise: userPayload.isEnterprise,
+            partner: userPayload.partner,
         });
 
     } catch (error) {
@@ -468,6 +471,7 @@ authRouter.get("/check-auth", verifyToken, async (req, res) => {
             nombre:                decoded.nombre                || null,
             admin:                 decoded.admin                 === true,
             isEnterprise:          !!decoded.isEnterprise,
+            partner:                !!decoded.partner,
             userCertificated:      !!decoded.userCertificated,
             purchases:             Array.isArray(decoded.purchases) ? decoded.purchases : [],
             purchaseExpiry:        decoded.purchaseExpiry        || {},
@@ -484,6 +488,7 @@ authRouter.get("/check-auth", verifyToken, async (req, res) => {
             user:        userPayload,
             isAdmin:     userPayload.admin,
             isEnterprise: userPayload.isEnterprise,
+            partner: userPayload.partner,
         });
     } catch (error) {
         return res.status(401).json({ authenticated: false });
@@ -506,6 +511,7 @@ authRouter.get("/me", verifyToken, checkBanned, async (req, res) => {
             nombre:                decoded.nombre                || null,
             admin:                 decoded.admin                 === true,
             isEnterprise:          !!decoded.isEnterprise,
+            partner:                !!decoded.partner,
             userCertificated:      !!decoded.userCertificated,
             purchases:             Array.isArray(decoded.purchases) ? decoded.purchases : [],
             purchaseExpiry:        decoded.purchaseExpiry        || {},
