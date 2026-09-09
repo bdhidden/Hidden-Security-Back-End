@@ -1,20 +1,21 @@
-const { MODERN_SOC_OPERATIONS_VALIDATED_SKILLS } = require("../skills/modernSocSkills");
+// MODERN SOC CONFIG
+const SOC1_MODULE_SIZE  = 8; // 7 PDFs + 1 quiz por módulo
+const SOC1_MODULE_COUNT = 8; // 8 módulos totales
 
-// routers las conozcan.
+const soc1QuizSteps = Array.from(
+  { length: SOC1_MODULE_COUNT },
+  (_, i) => (i + 1) * SOC1_MODULE_SIZE - 1
+); // → [7, 15, 23, 31, 39, 47, 55, 63]
+
 const COURSES = {
   soc1: {
-    totalSteps:   13,
-    passingScore: 0.70,
-    quizSteps:    [3, 6, 9, 12],
-    questionsPerQuiz: 20,
-    skillTree: MODERN_SOC_OPERATIONS_VALIDATED_SKILLS,
+    totalSteps:       SOC1_MODULE_SIZE * SOC1_MODULE_COUNT, // 64
+    quizSteps:        soc1QuizSteps,                         // [7,15,23,31,39,47,55,63]
+    questionsPerQuiz: 8,
+    passingScore:     0.70,
   },
 };
 
 const VALID_COURSE_IDS = Object.keys(COURSES);
 
-function flattenSkillTree(tree) {
-  return Object.values(tree).flat();
-}
-
-module.exports = { COURSES, VALID_COURSE_IDS, flattenSkillTree };
+module.exports = { COURSES, VALID_COURSE_IDS };

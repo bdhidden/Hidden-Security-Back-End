@@ -7,7 +7,7 @@ const { COURSES, VALID_COURSE_IDS } = require("../config/courses");
 
 const esProduccion = process.env.NODE_ENV === "production";
 
-// ─── Middleware: verificar plan activo ────────────────────────────────────────
+// --- Middleware: verificar plan activo -----------------------------------
 async function requireActivePlan(req, res, next) {
   try {
     const uid        = req.user.uid;
@@ -42,7 +42,7 @@ async function requireActivePlan(req, res, next) {
   }
 }
 
-// ─── Helper: validar courseId contra whitelist ────────────────────────────────
+// --- Helper: validar courseId contra whitelist -----------------------------
 function getCourse(courseId, res) {
   if (!VALID_COURSE_IDS.includes(courseId)) {
     res.status(400).json({ message: "Curso no válido" });
@@ -51,7 +51,25 @@ function getCourse(courseId, res) {
   return COURSES[courseId];
 }
 
-// ─── Helper: otorgar la claim de "usuario certificado" al completar un curso ──
+// --- Helper: buscar o crear el progreso de forma ATÓMICA --------------------
+// Antes esto era `findOne` y, si no existía, `create` en un segundo paso.
+// Eso deja una ventana de carrera: en dev, React StrictMode dispara el
+// useEffect que llama a fetchProgress() DOS VECES casi en simultáneo. Si el
+// usuario todavía no tiene documento de progreso, ambos requests hacen
+// findOne → null → intentan crear, y el segundo choca contra el índice
+// único { userId, courseId } (E11000 duplicate key), lo que se traducía en
+// un 500 en el catch. findOneAndUpdate con upsert:true es atómico a nivel
+// de Mongo — sea cual sea el orden de llegada, nunca puede haber dos
+// creaciones en paralelo para el mismo userId+courseId.
+async function findOrCreateProgress(userId, courseId) {
+  return CourseProgress.findOneAndUpdate(
+    { userId, courseId },
+    { $setOnInsert: { userId, courseId } },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+}
+
+// --- Helper: otorgar la claim de "usuario certificado" al completar un curso --
 // Es un booleano — a diferencia del árbol de skills, esto SÍ entra sin
 // problema dentro del límite de 1000 bytes de Firebase custom claims, así
 // que no hace falta derivarlo desde Mongo en cada request. Se escribe una
@@ -83,7 +101,7 @@ async function grantCertifiedClaim(uid) {
   }
 }
 
-// ─── GET /api/course/:courseId/progress ──────────────────────────────────────
+// --- GET /api/course/:courseId/progress -------------------------------------
 courseRouter.get("/api/course/:courseId/progress", verifyToken, requireActivePlan, async (req, res) => {
   try {
     const { courseId } = req.params;
@@ -92,10 +110,7 @@ courseRouter.get("/api/course/:courseId/progress", verifyToken, requireActivePla
     const course = getCourse(courseId, res);
     if (!course) return;
 
-    let progress = await CourseProgress.findOne({ userId, courseId });
-    if (!progress) {
-      progress = await CourseProgress.create({ userId, courseId });
-    }
+    const progress = await findOrCreateProgress(userId, courseId);
 
     res.json({ data: progress });
   } catch (err) {
@@ -104,7 +119,7 @@ courseRouter.get("/api/course/:courseId/progress", verifyToken, requireActivePla
   }
 });
 
-// ─── PATCH /api/course/:courseId/progress/step ───────────────────────────────
+// --- PATCH /api/course/:courseId/progress/step -------------------------------
 courseRouter.patch("/api/course/:courseId/progress/step", verifyToken, requireActivePlan, async (req, res) => {
   try {
     const { courseId } = req.params;
@@ -127,10 +142,7 @@ courseRouter.patch("/api/course/:courseId/progress/step", verifyToken, requireAc
       });
     }
 
-    let progress = await CourseProgress.findOne({ userId, courseId });
-    if (!progress) {
-      progress = await CourseProgress.create({ userId, courseId });
-    }
+    const progress = await findOrCreateProgress(userId, courseId);
 
     if (!progress.completedSteps.includes(stepIndex)) {
       progress.completedSteps.push(stepIndex);
@@ -173,7 +185,7 @@ courseRouter.patch("/api/course/:courseId/progress/step", verifyToken, requireAc
   }
 });
 
-// ─── PATCH /api/course/:courseId/progress/quiz ───────────────────────────────
+// --- PATCH /api/course/:courseId/progress/quiz -------------------------------
 courseRouter.patch("/api/course/:courseId/progress/quiz", verifyToken, requireActivePlan, async (req, res) => {
   try {
     const { courseId }           = req.params;
@@ -201,16 +213,23 @@ courseRouter.patch("/api/course/:courseId/progress/quiz", verifyToken, requireAc
       return res.status(400).json({ message: "Todas las respuestas deben ser índices numéricos válidos" });
     }
 
-    // ── Respuestas correctas — fuente de verdad en el backend ─────────────────
+    // -- Respuestas correctas — fuente de verdad en el backend -----------------
+    // Índices de quiz recalculados para el árbol nuevo: 8 módulos, cada uno
+    // con 7 PDFs + 1 quiz de 8 preguntas — el quiz siempre es el último step
+    // del módulo (N*8 - 1), igual que calcula config/courses.js.
+    // Los 8 módulos usan hoy el MISMO contenido simulado (MODULO_1_QUIZ_QUESTIONS
+    // en soc1Course.tsx) — por eso las 8 entradas tienen el mismo array de
+    // respuestas. Reemplazá cada entrada por las respuestas reales de cada
+    // módulo a medida que tengas su contenido definitivo.
     const CORRECT_ANSWERS = {
-      // Quiz Módulo 1 (step 3) — 20 preguntas
-      3: [1,0,1,2,1,1,1,1,2,1,1,2,1,2,1,0,1,1,1,1],
-      // Quiz Módulo 2 (step 6) — 20 preguntas
-      6: [2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1],
-      // Quiz Módulo 3 (step 9) — 20 preguntas
-      9: [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
-      // Quiz Módulo 4 (step 12) — 20 preguntas
-      12:[2,1,2,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1],
+      7:  [1,2,2,1,1,2,1,1], // Quiz Módulo 1
+      15: [1,2,2,1,1,2,1,1], // Quiz Módulo 2 (simulado = mismo contenido que Módulo 1)
+      23: [1,2,2,1,1,2,1,1], // Quiz Módulo 3 (simulado = mismo contenido que Módulo 1)
+      31: [1,2,2,1,1,2,1,1], // Quiz Módulo 4 (simulado = mismo contenido que Módulo 1)
+      39: [1,2,2,1,1,2,1,1], // Quiz Módulo 5 (simulado = mismo contenido que Módulo 1)
+      47: [1,2,2,1,1,2,1,1], // Quiz Módulo 6 (simulado = mismo contenido que Módulo 1)
+      55: [1,2,2,1,1,2,1,1], // Quiz Módulo 7 (simulado = mismo contenido que Módulo 1)
+      63: [1,2,2,1,1,2,1,1], // Quiz Módulo 8 (simulado = mismo contenido que Módulo 1)
     };
 
     const correctAnswers = CORRECT_ANSWERS[stepIndex];
@@ -222,10 +241,7 @@ courseRouter.patch("/api/course/:courseId/progress/quiz", verifyToken, requireAc
     const score  = correct / course.questionsPerQuiz;
     const passed = score >= course.passingScore;
 
-    let progress = await CourseProgress.findOne({ userId, courseId });
-    if (!progress) {
-      progress = await CourseProgress.create({ userId, courseId });
-    }
+    const progress = await findOrCreateProgress(userId, courseId);
 
     // Capturamos el estado ANTES de tocar nada — es lo que nos permite
     // detectar la transición "recién ahora se completó el curso" más abajo,
@@ -266,7 +282,7 @@ courseRouter.patch("/api/course/:courseId/progress/quiz", verifyToken, requireAc
 
     await progress.save();
 
-    // ── Recién completó el curso en este request → otorgar claim ───────────
+    // -- Recién completó el curso en este request → otorgar claim -------------
     // Comparamos contra wasCompleted (capturado antes de guardar), así un
     // reintento de un quiz ya aprobado, o de cualquier otro después de
     // completado, nunca vuelve a disparar esto.
