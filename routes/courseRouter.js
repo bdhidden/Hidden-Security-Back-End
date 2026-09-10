@@ -304,4 +304,37 @@ courseRouter.patch("/api/course/:courseId/progress/quiz", verifyToken, requireAc
   }
 });
 
+// --- GET /api/course/progress-summary ----------------------------------------
+// Devuelve, para el usuario autenticado, el resumen de progreso de TODOS los cursos.
+courseRouter.get("/api/course/progress-summary", verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.uid;
+    const progressDocs = await CourseProgress.find({ userId }).lean();
+
+    const summary = progressDocs.map((p) => {
+      const course     = COURSES[p.courseId];
+      const totalSteps = course?.totalSteps ?? 0;
+      const percent    = totalSteps > 0
+        ? Math.round((p.completedSteps.length / totalSteps) * 100)
+        : 0;
+
+      return {
+        courseId:       p.courseId,
+        currentStep:    p.currentStep,
+        completedCount: p.completedSteps.length,
+        totalSteps,
+        percent,
+        isCompleted:    p.isCompleted,
+        startedAt:      p.startedAt,
+        completedAt:    p.completedAt,
+      };
+    });
+
+    res.json({ data: summary });
+  } catch (err) {
+    console.error("Error GET progress-summary:", err);
+    res.status(500).json({ message: "Error al obtener resumen de progreso" });
+  }
+});
+
 module.exports = courseRouter;
